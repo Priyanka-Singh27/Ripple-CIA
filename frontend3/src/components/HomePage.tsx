@@ -386,7 +386,7 @@ export const HomePage = ({
   onLogout: () => void;
   onProjectClick: (projectId: string) => void;
   onOpenProfile?: () => void;
-  onOpenView?: (viewType: 'global-changes' | 'global-teams' | 'global-notifications') => void;
+  onOpenView?: (viewType: 'global-changes' | 'global-teams' | 'global-notifications' | 'global-settings') => void;
 }) => {
   const [isLoading] = useState(false);
   const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS);
@@ -425,7 +425,7 @@ export const HomePage = ({
     if (label === 'Changes') onOpenView?.('global-changes');
     else if (label === 'Teams') onOpenView?.('global-teams');
     else if (label === 'Notifications') onOpenView?.('global-notifications');
-    // Dashboard is the current view, Settings is currently handled via project overview or future global settings
+    else if (label === 'Settings') onOpenView?.('global-settings');
   };
 
   return (

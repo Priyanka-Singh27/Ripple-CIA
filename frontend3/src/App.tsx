@@ -13,6 +13,7 @@ import { UserProfilePage } from './components/UserProfilePage';
 import { GlobalNotificationsPage } from './components/GlobalNotificationsPage';
 import { GlobalChangesPage } from './components/GlobalChangesPage';
 import { GlobalTeamsPage } from './components/GlobalTeamsPage';
+import { GlobalSettingsPage } from './components/GlobalSettingsPage';
 import { SpotlightCursor } from './components/ui/spotlight-cursor';
 import { Particles } from './components/ui/particles';
 
@@ -30,7 +31,8 @@ type ActiveView =
   | { type: 'profile' }
   | { type: 'global-notifications' }
   | { type: 'global-changes' }
-  | { type: 'global-teams' };
+  | { type: 'global-teams' }
+  | { type: 'global-settings' };
 
 export default function App() {
   const [view, setView] = useState<ActiveView>({ type: 'landing' });
@@ -164,6 +166,10 @@ export default function App() {
 
     if (view.type === 'global-teams') {
       return <GlobalTeamsPage onBack={() => setView({ type: 'dashboard' })} />;
+    }
+
+    if (view.type === 'global-settings') {
+      return <GlobalSettingsPage onBack={() => setView({ type: 'dashboard' })} />;
     }
 
     // dashboard (default app-shell view)
