@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -63,6 +63,11 @@ class ComponentDependency(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     source_component_id: Mapped[str] = mapped_column(ForeignKey("components.id", ondelete="CASCADE"), nullable=False)
     target_component_id: Mapped[str] = mapped_column(ForeignKey("components.id", ondelete="CASCADE"), nullable=False)
+    # Populated by the Tree-sitter parser
+    dependency_type: Mapped[str] = mapped_column(String(50), default="import", nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    detection_method: Mapped[str] = mapped_column(String(50), default="parser", nullable=False)
+    symbols: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # confirmed matching symbols
 
     source_component: Mapped["Component"] = relationship(foreign_keys=[source_component_id], back_populates="source_dependencies")
     target_component: Mapped["Component"] = relationship(foreign_keys=[target_component_id], back_populates="target_dependencies")
