@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { ArrowLeft, Users, Search, MessageSquare, Clock } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "./ui/particles";
+import { useQuery } from "@tanstack/react-query";
+import { notificationsApi } from "@/src/lib/api";
 
 interface Collaborator {
     id: string;
@@ -14,43 +16,28 @@ interface Collaborator {
     online: boolean;
 }
 
-const MOCK_COLLABORATORS: Collaborator[] = [
-    {
-        id: "u1",
-        name: "Priya Sharma",
-        handle: "@priya",
-        initials: "PS",
-        avatarColor: "from-emerald-500 to-green-600",
-        sharedProjects: ["Auth Service", "Payments API"],
-        lastActive: "Active now",
-        online: true,
-    },
-    {
-        id: "u2",
-        name: "Raj Patel",
-        handle: "@raj",
-        initials: "RP",
-        avatarColor: "from-amber-500 to-orange-600",
-        sharedProjects: ["Frontend", "Auth Service"],
-        lastActive: "1 day ago",
-        online: false,
-    },
-    {
-        id: "u3",
-        name: "Sarah Chen",
-        handle: "@sarah",
-        initials: "SC",
-        avatarColor: "from-rose-500 to-pink-600",
-        sharedProjects: ["Payments API"],
-        lastActive: "3 days ago",
-        online: false,
-    },
-];
+
 
 export const GlobalTeamsPage = ({ onBack }: { onBack: () => void }) => {
     const [query, setQuery] = useState("");
 
-    const filtered = MOCK_COLLABORATORS.filter(c =>
+    const { data: rawCollaborators = [], isLoading } = useQuery({
+        queryKey: ['collaborators'],
+        queryFn: () => notificationsApi.listCollaborators()
+    });
+
+    const collaborators: Collaborator[] = rawCollaborators.map(c => ({
+        id: c.id,
+        name: c.name,
+        handle: c.handle,
+        initials: (c.name || "U").substring(0, 2).toUpperCase(),
+        avatarColor: "from-blue-500 to-indigo-600",
+        sharedProjects: ["Shared Project"], // Backend Doesn't return shared projects, mock it
+        lastActive: "Active recently",
+        online: false
+    }));
+
+    const filtered = collaborators.filter(c =>
         c.name.toLowerCase().includes(query.toLowerCase()) ||
         c.handle.toLowerCase().includes(query.toLowerCase()) ||
         c.sharedProjects.some(p => p.toLowerCase().includes(query.toLowerCase()))
@@ -77,6 +64,7 @@ export const GlobalTeamsPage = ({ onBack }: { onBack: () => void }) => {
                                 <Users className="h-4 w-4 text-white" />
                             </div>
                             <h1 className="text-lg font-bold">Your Collaborators</h1>
+                            {isLoading && <span className="text-xs text-white/50 ml-4 animate-pulse">Loading...</span>}
                         </div>
                     </div>
                 </header>

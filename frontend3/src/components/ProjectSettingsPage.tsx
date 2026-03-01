@@ -6,6 +6,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "@/src/components/ui/particles";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { projectsApi, notificationsApi, componentsApi } from "@/src/lib/api";
+import { authStore } from "@/src/lib/authStore";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -650,9 +653,6 @@ const NAV_ITEMS: { key: NavSection; label: string; icon: React.ElementType }[] =
 
 interface ProjectSettingsPageProps {
     projectId: string;
-    projectName: string;
-    description: string;
-    strictnessMode: StrictnessMode;
     onBack: () => void;
     onDeleted: () => void;
     onArchived: () => void;
@@ -660,13 +660,22 @@ interface ProjectSettingsPageProps {
 
 export const ProjectSettingsPage = ({
     projectId,
-    projectName,
-    description,
-    strictnessMode,
     onBack,
     onDeleted,
     onArchived,
 }: ProjectSettingsPageProps) => {
+    const queryClient = useQueryClient();
+    const { user: currentUser } = authStore();
+
+    const { data: projectData, isLoading: loadingProj } = useQuery({
+        queryKey: ['project', projectId],
+        queryFn: () => projectsApi.getProject(projectId),
+    });
+
+    const { data: rawInvites = [], isLoading: loadingInvites } = useQuery({
+        queryKey: ['project-invites', projectId],
+        queryFn: () => projectsApi.getInvites(projectId)
+    });
     const [activeSection, setActiveSection] = useState<NavSection>("general");
     const sectionRefs = useRef<Record<NavSection, HTMLDivElement | null>>({
         general: null, members: null, strictness: null, danger: null,
@@ -708,7 +717,7 @@ export const ProjectSettingsPage = ({
                     {/* Project pill */}
                     <div className="px-4 py-3 border-b border-white/[0.04]">
                         <p className="text-[10px] font-semibold text-white/25 uppercase tracking-wider mb-1.5">Settings for</p>
-                        <p className="text-xs font-semibold text-white truncate">{projectName}</p>
+                        <p className="text-xs font-semibold text-white truncate">{projectData?.name || "Loading..."}</p>
                     </div>
 
                     {/* Nav items */}
@@ -748,7 +757,7 @@ export const ProjectSettingsPage = ({
 
                         {/* General */}
                         <div ref={el => { sectionRefs.current.general = el; }}>
-                            <GeneralSection projectName={projectName} description={description} />
+                            <GeneralSection projectName={projectData?.name || ""} description={projectData?.description || ""} />
                         </div>
 
                         {/* Divider */}
@@ -763,7 +772,7 @@ export const ProjectSettingsPage = ({
 
                         {/* Strictness Mode */}
                         <div ref={el => { sectionRefs.current.strictness = el; }}>
-                            <StrictnessSection current={strictnessMode} />
+                            <StrictnessSection current={projectData?.strictnessMode as StrictnessMode || "visibility"} />
                         </div>
 
                         <div className="h-px bg-white/[0.04]" />
@@ -771,7 +780,7 @@ export const ProjectSettingsPage = ({
                         {/* Danger Zone */}
                         <div ref={el => { sectionRefs.current.danger = el; }}>
                             <DangerSection
-                                projectName={projectName}
+                                projectName={projectData?.name || ""}
                                 onArchived={onArchived}
                                 onDeleted={onDeleted}
                             />

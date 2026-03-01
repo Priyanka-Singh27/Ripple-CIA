@@ -15,6 +15,8 @@ import {
     RefreshCw, Eye, Shield
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { componentsApi, changesApi } from "@/src/lib/api";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -43,63 +45,7 @@ interface Dependency {
 
 // ─── Mock Data ─────────────────────────────────────────────────────────────
 
-const COMPONENTS: ComponentNode[] = [
-    {
-        id: "auth", name: "Authentication", status: "flagged", fileCount: 8,
-        contributors: [
-            { id: "u1", name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-            { id: "u2", name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-        ],
-        lastActivity: "2h ago", activeChanges: 2, isMyComponent: true,
-    },
-    {
-        id: "dashboard", name: "Dashboard UI", status: "pending", fileCount: 14,
-        contributors: [
-            { id: "u3", name: "Raj Patel", initials: "RP", color: "from-amber-500 to-orange-600" },
-            { id: "u4", name: "Sarah Chen", initials: "SC", color: "from-rose-500 to-pink-600" },
-        ],
-        lastActivity: "5h ago", activeChanges: 1, isMyComponent: false,
-    },
-    {
-        id: "checkout", name: "Checkout & Payment", status: "stable", fileCount: 11,
-        contributors: [
-            { id: "u2", name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-            { id: "u5", name: "Mia Wong", initials: "MW", color: "from-cyan-500 to-teal-600" },
-        ],
-        lastActivity: "Yesterday", activeChanges: 0, isMyComponent: true,
-    },
-    {
-        id: "gateway", name: "API Gateway", status: "stable", fileCount: 9,
-        contributors: [
-            { id: "u1", name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-            { id: "u3", name: "Raj Patel", initials: "RP", color: "from-amber-500 to-orange-600" },
-        ],
-        lastActivity: "3 days ago", activeChanges: 0, isMyComponent: true,
-    },
-    {
-        id: "notification", name: "Notification Service", status: "locked", fileCount: 6,
-        contributors: [
-            { id: "u4", name: "Sarah Chen", initials: "SC", color: "from-rose-500 to-pink-600" },
-        ],
-        lastActivity: "1 week ago", activeChanges: 0, isMyComponent: false,
-    },
-    {
-        id: "search", name: "Search & Indexing", status: "stable", fileCount: 12,
-        contributors: [
-            { id: "u5", name: "Mia Wong", initials: "MW", color: "from-cyan-500 to-teal-600" },
-        ],
-        lastActivity: "2 days ago", activeChanges: 0, isMyComponent: false,
-    },
-];
 
-const DEPENDENCIES: Dependency[] = [
-    { from: "auth", to: "dashboard", type: "import", hasActiveChange: true, label: "validateUser" },
-    { from: "auth", to: "checkout", type: "import", hasActiveChange: true, label: "validateUser" },
-    { from: "auth", to: "gateway", type: "import", hasActiveChange: false, label: "refreshToken" },
-    { from: "gateway", to: "notification", type: "calls", hasActiveChange: false, label: "send()" },
-    { from: "gateway", to: "search", type: "calls", hasActiveChange: false, label: "query()" },
-    { from: "checkout", to: "notification", type: "event", hasActiveChange: false, label: "orderPlaced" },
-];
 
 // ─── Status Config ──────────────────────────────────────────────────────────
 
@@ -254,11 +200,13 @@ const edgeTypes = { animated: AnimatedChangeEdge };
 const DetailPanel = ({
     component,
     dependencies,
+    components,
     onClose,
     onOpenIDE,
 }: {
     component: ComponentNode;
     dependencies: Dependency[];
+    components: ComponentNode[];
     onClose: () => void;
     onOpenIDE: () => void;
 }) => {
@@ -315,7 +263,7 @@ const DetailPanel = ({
                         <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider mb-2">Depends on</p>
                         <div className="space-y-1.5">
                             {incoming.map((dep, i) => {
-                                const src = COMPONENTS.find(c => c.id === dep.from);
+                                const src = components.find(c => c.id === dep.from);
                                 return src ? (
                                     <div key={i} className="flex items-center gap-2">
                                         <div className={cn("h-2 w-2 rounded-full shrink-0", STATUS_CFG[src.status].dot)} />
@@ -335,7 +283,7 @@ const DetailPanel = ({
                         <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider mb-2">Used by</p>
                         <div className="space-y-1.5">
                             {outgoing.map((dep, i) => {
-                                const tgt = COMPONENTS.find(c => c.id === dep.to);
+                                const tgt = components.find(c => c.id === dep.to);
                                 return tgt ? (
                                     <div key={i} className="flex items-center gap-2">
                                         <div className={cn("h-2 w-2 rounded-full shrink-0", STATUS_CFG[tgt.status].dot)} />
@@ -402,13 +350,15 @@ const Legend = () => (
 // ─── Inner Graph (needs ReactFlowProvider) ──────────────────────────────────
 
 interface InnerGraphProps {
+    components: ComponentNode[];
+    dependencies: Dependency[];
     onNodeClick: (c: ComponentNode | null) => void;
     selectedId: string | null;
     direction: "LR" | "TB";
 }
 
-function buildNodesAndEdges(selectedId: string | null, direction: "LR" | "TB") {
-    const rawNodes: Node[] = COMPONENTS.map(c => ({
+function buildNodesAndEdges(components: ComponentNode[], dependencies: Dependency[], selectedId: string | null, direction: "LR" | "TB") {
+    const rawNodes: Node[] = components.map(c => ({
         id: c.id,
         type: "component",
         position: { x: 0, y: 0 },
@@ -416,7 +366,7 @@ function buildNodesAndEdges(selectedId: string | null, direction: "LR" | "TB") {
         selected: c.id === selectedId,
     }));
 
-    const rawEdges: Edge[] = DEPENDENCIES.map((dep, i) => {
+    const rawEdges: Edge[] = dependencies.map((dep, i) => {
         const color = dep.hasActiveChange ? "#fb923c" : { import: "#8b5cf680", calls: "#3b82f680", event: "#10b98180" }[dep.type];
         return {
             id: `e${i}`,
@@ -431,21 +381,20 @@ function buildNodesAndEdges(selectedId: string | null, direction: "LR" | "TB") {
     return getLayoutedElements(rawNodes, rawEdges, direction);
 }
 
-function InnerGraph({ onNodeClick, selectedId, direction }: InnerGraphProps) {
-    const { nodes: ln, edges: le } = buildNodesAndEdges(selectedId, direction);
+function InnerGraph({ components, dependencies, onNodeClick, selectedId, direction }: InnerGraphProps) {
+    const { nodes: ln, edges: le } = useMemo(() => buildNodesAndEdges(components, dependencies, selectedId, direction), [components, dependencies, selectedId, direction]);
     const [nodes, setNodes, onNodesChange] = useNodesState(ln);
     const [edges, setEdges, onEdgesChange] = useEdgesState(le);
     const { fitView } = useReactFlow();
 
     useEffect(() => {
-        const { nodes: nn, edges: ne } = buildNodesAndEdges(selectedId, direction);
-        setNodes(nn);
-        setEdges(ne);
+        setNodes(ln);
+        setEdges(le);
         setTimeout(() => fitView({ padding: 0.15, duration: 400 }), 50);
-    }, [direction, selectedId]);
+    }, [ln, le, fitView]);
 
     const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-        const comp = COMPONENTS.find(c => c.id === node.id) ?? null;
+        const comp = components.find(c => c.id === node.id) ?? null;
         onNodeClick(comp);
     }, [onNodeClick]);
 
@@ -482,7 +431,7 @@ function InnerGraph({ onNodeClick, selectedId, direction }: InnerGraphProps) {
             />
             <MiniMap
                 nodeColor={(n) => {
-                    const comp = COMPONENTS.find(c => c.id === n.id);
+                    const comp = components.find(c => c.id === n.id);
                     if (!comp) return "#1a1a1a";
                     return { stable: "#10b981", flagged: "#f97316", pending: "#facc15", locked: "#ffffff30" }[comp.status] ?? "#333";
                 }}
@@ -514,8 +463,68 @@ export const DependencyGraphPage = ({ projectId, onBack, onOpenIDE }: Dependency
     const [selected, setSelected] = useState<ComponentNode | null>(null);
     const [direction, setDirection] = useState<"LR" | "TB">("LR");
 
-    const totalEdges = DEPENDENCIES.length;
-    const activeEdges = DEPENDENCIES.filter(d => d.hasActiveChange).length;
+    const changeId = new URLSearchParams(window.location.search).get('change_id');
+    const { data: impactsData } = useQuery({
+        queryKey: ['impact', changeId],
+        queryFn: () => changesApi.getImpact(changeId!),
+        enabled: !!changeId
+    });
+
+    const { data: components = [], isLoading: componentsLoading } = useQuery({
+        queryKey: ['project', projectId, 'components'],
+        queryFn: async () => {
+            const comps = await componentsApi.list(projectId);
+            const nodes: ComponentNode[] = comps.map(c => ({
+                id: c.id,
+                name: c.name,
+                status: c.status as ComponentStatus,
+                fileCount: 0,
+                contributors: c.contributors.map(ct => ({
+                    id: ct.user_id,
+                    name: "Unknown",
+                    initials: "??",
+                    color: "from-gray-500 to-gray-600"
+                })),
+                lastActivity: "Unknown",
+                activeChanges: 0,
+                isMyComponent: false
+            }));
+            return nodes;
+        }
+    });
+
+    const { data: dependencies = [], isLoading: depsLoading } = useQuery({
+        queryKey: ['project', projectId, 'dependencies'],
+        queryFn: async () => {
+            if (!components.length) return [];
+            const depsResponses = await Promise.all(components.map(c => componentsApi.getDependencies(c.id)));
+            const edges: Dependency[] = [];
+            const impactedComponentIds = impactsData ? new Set(impactsData.impacts.map(i => i.component_id)) : new Set<string>();
+
+            depsResponses.forEach((res, i) => {
+                const sourceId = components[i].id;
+                res.depends_on.forEach(dep => {
+                    const hasActiveChange = impactedComponentIds.has(sourceId) || impactedComponentIds.has(dep.target_component_id);
+                    edges.push({
+                        from: sourceId,
+                        to: dep.target_component_id,
+                        type: dep.dependency_type as "import" | "calls" | "event",
+                        hasActiveChange,
+                        label: dep.dependency_type
+                    });
+                });
+            });
+            return edges;
+        },
+        enabled: components.length > 0
+    });
+
+    const totalEdges = dependencies.length;
+    const activeEdges = dependencies.filter(d => d.hasActiveChange).length;
+
+    if (componentsLoading) {
+        return <div className="flex h-screen items-center justify-center bg-[#08080a] text-white">Loading graph...</div>;
+    }
 
     return (
         <div className="flex h-screen bg-[#08080a] text-white overflow-hidden flex-col">
@@ -544,7 +553,7 @@ export const DependencyGraphPage = ({ projectId, onBack, onOpenIDE }: Dependency
                 <div className="flex items-center gap-3">
                     {/* Stats */}
                     <div className="flex items-center gap-3 text-[11px] text-white/35">
-                        <span>{COMPONENTS.length} components</span>
+                        <span>{components.length} components</span>
                         <span className="text-white/15">·</span>
                         <span>{totalEdges} connections</span>
                         {activeEdges > 0 && (
@@ -582,6 +591,8 @@ export const DependencyGraphPage = ({ projectId, onBack, onOpenIDE }: Dependency
             <div className="flex-1 relative">
                 <ReactFlowProvider>
                     <InnerGraph
+                        components={components}
+                        dependencies={dependencies}
                         onNodeClick={setSelected}
                         selectedId={selected?.id ?? null}
                         direction={direction}
@@ -605,7 +616,8 @@ export const DependencyGraphPage = ({ projectId, onBack, onOpenIDE }: Dependency
                 {selected && (
                     <DetailPanel
                         component={selected}
-                        dependencies={DEPENDENCIES}
+                        components={components}
+                        dependencies={dependencies}
                         onClose={() => setSelected(null)}
                         onOpenIDE={() => onOpenIDE(projectId, selected.id, selected.name, !selected.isMyComponent)}
                     />

@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { Bell, Check, GitBranch, ShieldAlert, CheckCircle2, Waves, ArrowLeft } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "./ui/particles";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { notificationsApi } from "@/src/lib/api";
 
 type NotificationType = "change" | "approved" | "alert" | "invite";
 
@@ -80,7 +82,38 @@ const ICON_COLORS: Record<NotificationType, string> = {
 
 export const GlobalNotificationsPage = ({ onBack }: { onBack: () => void }) => {
     const [filter, setFilter] = useState<"all" | "unread" | "alerts" | "changes" | "invites">("all");
-    const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
+    const queryClient = useQueryClient();
+
+    const { data: rawNotifs = [], isLoading } = useQuery({
+        queryKey: ['notifications'],
+        queryFn: () => notificationsApi.list()
+    });
+
+    const markReadMut = useMutation({
+        mutationFn: (ids?: string[]) => notificationsApi.markRead(ids),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['notifications'] });
+        }
+    });
+
+    const notifications: Notification[] = rawNotifs.map(n => {
+        let nType: NotificationType = "change";
+        if (n.type === "impact_alert" || n.type === "alert") nType = "alert";
+        else if (n.type === "change_auto_confirmed" || n.type === "approved" || n.type.includes("approved")) nType = "approved";
+        else if (n.type.includes("invite")) nType = "invite";
+
+        return {
+            id: n.id,
+            message: n.message,
+            time: new Date(n.created_at).toLocaleString(),
+            read: n.read,
+            type: nType,
+            project: "System",
+            author: "System",
+            avatarColor: "from-zinc-500 to-zinc-600",
+            initials: "SY"
+        };
+    });
 
     const filteredNotifications = notifications.filter(n => {
         if (filter === "unread") return !n.read;
@@ -91,7 +124,7 @@ export const GlobalNotificationsPage = ({ onBack }: { onBack: () => void }) => {
     });
 
     const markAllRead = () => {
-        setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+        markReadMut.mutate(undefined);
     };
 
     return (
@@ -160,8 +193,11 @@ export const GlobalNotificationsPage = ({ onBack }: { onBack: () => void }) => {
                                     return (
                                         <div
                                             key={notification.id}
+                                            onClick={() => {
+                                                if (!notification.read) markReadMut.mutate([notification.id]);
+                                            }}
                                             className={cn(
-                                                "group flex gap-4 p-5 rounded-2xl border transition-all duration-300",
+                                                "group flex gap-4 p-5 rounded-2xl border transition-all duration-300 cursor-pointer",
                                                 notification.read
                                                     ? "bg-white/[0.02] border-white/[0.04] hover:bg-white/[0.04]"
                                                     : "bg-white/[0.05] border-white/[0.10] hover:bg-white/[0.08]"

@@ -141,13 +141,16 @@ export interface Change {
 
 export interface ChangeImpact {
     id: string;
-    change_id: string;
     component_id: string;
+    component_name: string;
     contributor_id: string;
-    status: string;
+    contributor_name: string;
+    detection_method: string;
+    confidence: string;
+    affected_lines: any;
     llm_annotation: string | null;
-    affected_lines: Record<string, unknown> | null;
-    created_at: string;
+    acknowledged: boolean;
+    dismissed: boolean;
 }
 
 export interface ApiNotification {
@@ -205,9 +208,12 @@ export const projectsApi = {
     update: (id: string, data: Partial<Pick<Project, 'name' | 'description' | 'color' | 'icon' | 'status'>>) =>
         patch<Project>(`/projects/${id}`, data),
 
-    delete: (id: string) => del<void>(`/projects/${id}`),
+    delete: (id: string, action: 'archive' | 'delete' = 'delete') =>
+        del<void>(`/projects/${id}?action=${action}`),
 
     confirm: (id: string) => post<{ status: string }>(`/projects/${id}/confirm`),
+
+    getInvites: (id: string) => get<{ id: string; email: string; status: string; component_name: string; created_at: string }[]>(`/projects/${id}/invites`),
 };
 
 // ─── Components API ───────────────────────────────────────────────────────────
@@ -229,6 +235,9 @@ export const componentsApi = {
 
     removeContributor: (projectId: string, componentId: string, userId: string) =>
         del(`/projects/${projectId}/components/${componentId}/contributors/${userId}`),
+
+    getDependencies: (componentId: string) =>
+        get<{ depends_on: { target_component_id: string, dependency_type: string }[], depended_by: { source_component_id: string, dependency_type: string }[] }>(`/components/${componentId}/dependencies`),
 };
 
 // ─── Files API ────────────────────────────────────────────────────────────────
@@ -252,6 +261,18 @@ export const filesApi = {
 
     githubConfirm: (projectId: string, owner: string, repo: string, paths: string[]) =>
         post(`/projects/${projectId}/github-import/confirm`, { owner, repo, paths }),
+
+    getComponentFiles: (componentId: string) =>
+        get<{ id: string; path: string; language: string; size_bytes: number; download_url: string }[]>(`/components/${componentId}/files`),
+
+    getFileContent: (fileId: string) =>
+        get<{ filename: string; content: string; language: string }>(`/files/${fileId}/content`),
+
+    getFileDraft: (fileId: string) =>
+        get<{ id: string; content: string; updated_at: string }>(`/files/${fileId}/draft`),
+
+    saveFileDraft: (fileId: string, content: string) =>
+        post<{ id: string; content: string; updated_at: string }>(`/files/${fileId}/draft`, { content }),
 };
 
 // ─── Changes API ──────────────────────────────────────────────────────────────
@@ -261,10 +282,10 @@ export const changesApi = {
 
     listGlobal: (scope: 'mine' | 'affected' = 'mine') => get<Change[]>(`/changes?scope=${scope}`),
 
-    submit: (projectId: string, title: string, diffS3Key?: string) =>
-        post<Change>(`/projects/${projectId}/changes`, { title, diff_s3_key: diffS3Key }),
+    submit: (projectId: string, data: { component_id: string; title: string; description?: string; draft_ids: string[] }) =>
+        post<{ id: string; status: string }>(`/projects/${projectId}/changes`, data),
 
-    getImpact: (changeId: string) => get<{ change: Change; impacts: ChangeImpact[] }>(`/changes/${changeId}/impact`),
+    getImpact: (changeId: string) => get<{ change_request_id: string; status: string; impacts: ChangeImpact[] }>(`/changes/${changeId}/impact`),
 
     acknowledge: (changeId: string) => post(`/changes/${changeId}/acknowledge`),
 
@@ -276,7 +297,7 @@ export const changesApi = {
 export const notificationsApi = {
     list: () => get<ApiNotification[]>('/notifications'),
 
-    markRead: (ids?: string[]) => post('/notifications/mark-read', { ids: ids ?? [] }),
+    markRead: (ids?: string[]) => post('/notifications/mark-read', ids ? { ids } : { all: true }),
 
     createInvite: (projectId: string, email: string, componentId?: string) =>
         post<Invite>('/invites', { project_id: projectId, invited_email: email, component_id: componentId }),

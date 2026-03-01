@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "@/src/components/ui/particles";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { filesApi, changesApi } from "@/src/lib/api";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -26,162 +28,7 @@ interface MapImpactFile {
     changed: boolean;
 }
 
-// ─── Mock Data ─────────────────────────────────────────────────────────────
 
-const STABLE_AUTH_CONTENT = `import { User, Token, Options } from "./types";
-import { verifyJWT } from "./jwt";
-import { db } from "../db";
-
-/**
- * Validates a user based on token.
- * Used by Dashboard, Checkout, and API Gateway.
- */
-export async function validateUser(
-  user: User,
-  token: string
-): Promise<boolean> {
-  const decoded = verifyJWT(token);
-  if (!decoded || decoded.userId !== user.id) {
-    return false;
-  }
-
-  const dbUser = await db.users.findById(user.id);
-  if (!dbUser || dbUser.status !== "active") {
-    return false;
-  }
-
-  return true;
-}
-
-export async function refreshToken(token: string): Promise<string | null> {
-  try {
-    const decoded = verifyJWT(token);
-    if (!decoded) return null;
-    return generateToken(decoded.userId);
-  } catch {
-    return null;
-  }
-}
-`;
-
-const DRAFT_AUTH_CONTENT = `import { User, Token, Options } from "./types";
-import { verifyJWT } from "./jwt";
-import { db } from "../db";
-
-/**
- * Validates a user based on token.
- * Used by Dashboard, Checkout, and API Gateway.
- * 
- * @param options - Optional configuration for validation behaviour
- */
-export async function validateUser(
-  user: User,
-  token: string,
-  options: Options = {}
-): Promise<boolean> {
-  const decoded = verifyJWT(token, options.strict);
-  if (!decoded || decoded.userId !== user.id) {
-    return false;
-  }
-
-  const dbUser = await db.users.findById(user.id);
-  if (!dbUser || dbUser.status !== "active") {
-    return false;
-  }
-
-  // New: honour role overrides from options
-  if (options.requiredRole && dbUser.role !== options.requiredRole) {
-    return false;
-  }
-
-  return true;
-}
-
-export async function refreshToken(token: string): Promise<string | null> {
-  try {
-    const decoded = verifyJWT(token);
-    if (!decoded) return null;
-    return generateToken(decoded.userId);
-  } catch {
-    return null;
-  }
-}
-`;
-
-const STABLE_TYPES_CONTENT = `export interface User {
-  id: string;
-  email: string;
-  role: "admin" | "user" | "guest";
-  status: "active" | "suspended";
-}
-
-export interface Token {
-  userId: string;
-  iat: number;
-  exp: number;
-}
-`;
-
-const DRAFT_TYPES_CONTENT = `export interface User {
-  id: string;
-  email: string;
-  role: "admin" | "user" | "guest";
-  status: "active" | "suspended";
-}
-
-export interface Token {
-  userId: string;
-  iat: number;
-  exp: number;
-}
-
-export interface Options {
-  strict?: boolean;
-  requiredRole?: User["role"];
-  timeout?: number;
-}
-`;
-
-const MOCK_FILES: FileTab[] = [
-    {
-        id: "f1",
-        name: "auth.ts",
-        path: "src/auth/auth.ts",
-        language: "typescript",
-        stableContent: STABLE_AUTH_CONTENT,
-        draftContent: DRAFT_AUTH_CONTENT,
-    },
-    {
-        id: "f2",
-        name: "types.ts",
-        path: "src/auth/types.ts",
-        language: "typescript",
-        stableContent: STABLE_TYPES_CONTENT,
-        draftContent: DRAFT_TYPES_CONTENT,
-    },
-    {
-        id: "f3",
-        name: "jwt.ts",
-        path: "src/auth/jwt.ts",
-        language: "typescript",
-        stableContent: `import jwt from "jsonwebtoken";
-const SECRET = process.env.JWT_SECRET!;
-
-export function verifyJWT(token: string, strict = false) {
-  try {
-    return jwt.verify(token, SECRET) as any;
-  } catch {
-    return null;
-  }
-}
-
-export function generateToken(userId: string): string {
-  return jwt.sign({ userId }, SECRET, { expiresIn: "7d" });
-}
-`,
-        draftContent: null,
-    },
-];
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
@@ -411,8 +258,52 @@ export const MonacoIDEPage = ({
     onBack,
     onChangeSubmitted,
 }: MonacoIDEPageProps) => {
-    const [files, setFiles] = useState<FileTab[]>(MOCK_FILES);
-    const [activeFileId, setActiveFileId] = useState(MOCK_FILES[0].id);
+    const { data: realFiles = [], isLoading } = useQuery({
+        queryKey: ['component', componentId, 'expandedFiles'],
+        queryFn: async () => {
+            const meta = await filesApi.getComponentFiles(componentId);
+            const resolvedFiles: FileTab[] = await Promise.all(
+                meta.map(async m => {
+                    let stable = "";
+                    let draft = null;
+                    try {
+                        const contentRes = await filesApi.getFileContent(m.id);
+                        stable = contentRes.content;
+                    } catch (e) {
+                        // handle missing
+                    }
+                    try {
+                        const draftRes = await filesApi.getFileDraft(m.id);
+                        draft = draftRes.content;
+                    } catch (e) {
+                        // null
+                    }
+
+                    return {
+                        id: m.id,
+                        name: m.path.split('/').pop() || m.path,
+                        language: m.language,
+                        path: m.path,
+                        stableContent: stable,
+                        draftContent: draft
+                    };
+                })
+            );
+            return resolvedFiles;
+        },
+        enabled: !!componentId
+    });
+
+    const [files, setFiles] = useState<FileTab[]>([]);
+    const [activeFileId, setActiveFileId] = useState<string>("");
+
+    useEffect(() => {
+        if (realFiles.length > 0 && files.length === 0) {
+            setFiles(realFiles);
+            setActiveFileId(realFiles[0].id);
+        }
+    }, [realFiles]);
+
     const [showDiff, setShowDiff] = useState(false);
     const [showMapImpact, setShowMapImpact] = useState(false);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
@@ -420,32 +311,40 @@ export const MonacoIDEPage = ({
     const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    const activeFile = files.find(f => f.id === activeFileId)!;
-    const hasDraft = activeFile.draftContent !== null;
-    const isDirty = hasDraft && activeFile.draftContent !== activeFile.stableContent;
+    const activeFile = files.find(f => f.id === activeFileId);
+    const hasDraft = activeFile ? activeFile.draftContent !== null : false;
+    const isDirty = activeFile ? hasDraft && activeFile.draftContent !== activeFile.stableContent : false;
     const hasAnyDraft = files.some(f => f.draftContent !== null && f.draftContent !== f.stableContent);
     const changedFilesCount = files.filter(f => f.draftContent !== null && f.draftContent !== f.stableContent).length;
 
+    const saveDraftMut = useMutation({
+        mutationFn: ({ id, content }: { id: string, content: string }) => filesApi.saveFileDraft(id, content)
+    });
+
     // Debounced auto-save
     const handleEditorChange = useCallback((value: string | undefined) => {
-        if (!value || readOnly) return;
+        if (value === undefined || readOnly) return;
 
         // Update draft in state immediately (local)
         setFiles(prev => prev.map(f =>
             f.id === activeFileId ? { ...f, draftContent: value } : f
         ));
 
-        // Debounce actual "save"
+        setSaveState("saving");
         if (saveTimer.current) clearTimeout(saveTimer.current);
         if (savedTimer.current) clearTimeout(savedTimer.current);
 
-        setSaveState("saving");
-        saveTimer.current = setTimeout(() => {
-            // Simulated POST /files/{id}/draft
-            setSaveState("saved");
+        saveTimer.current = setTimeout(async () => {
+            try {
+                await saveDraftMut.mutateAsync({ id: activeFileId, content: value });
+                setSaveState("saved");
+            } catch {
+                setSaveState("idle");
+            }
             savedTimer.current = setTimeout(() => setSaveState("idle"), 2000);
-        }, 2000);
-    }, [activeFileId, readOnly]);
+        }, 1500);
+
+    }, [activeFileId, readOnly, saveDraftMut]);
 
     useEffect(() => {
         return () => {
@@ -454,16 +353,31 @@ export const MonacoIDEPage = ({
         };
     }, []);
 
-    const handleMapImpactSubmit = (title: string, description: string, selectedFileIds: string[]) => {
+    const submitChangeMut = useMutation({
+        mutationFn: (data: any) => changesApi.submit(projectId, data)
+    });
+
+    const handleMapImpactSubmit = async (title: string, description: string, selectedFileIds: string[]) => {
         setIsSubmitting(true);
-        setShowMapImpact(false);
-        // Simulate POST /projects/{id}/changes → 202
-        setTimeout(() => {
+        try {
+            const res = await submitChangeMut.mutateAsync({
+                component_id: componentId,
+                title,
+                description,
+                draft_ids: selectedFileIds
+            });
+            setShowMapImpact(false);
+            onChangeSubmitted(res.id);
+        } catch (e) {
+            console.error(e);
+        } finally {
             setIsSubmitting(false);
-            const mockChangeId = `ch-${Date.now()}`;
-            onChangeSubmitted(mockChangeId);
-        }, 1200);
+        }
     };
+
+    if (isLoading || files.length === 0 || !activeFile) {
+        return <div className="flex h-screen items-center justify-center bg-[#0d0d0d] text-white">Loading component files...</div>;
+    }
 
     const currentContent = activeFile.draftContent ?? activeFile.stableContent;
 

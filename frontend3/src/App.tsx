@@ -122,9 +122,6 @@ export default function App() {
       return (
         <ProjectSettingsPage
           projectId={view.projectId}
-          projectName="E-Commerce Platform"
-          description="Full-stack marketplace with microservices architecture"
-          strictnessMode="soft"
           onBack={() => setView({ type: 'project', projectId: view.projectId })}
           onDeleted={() => setView({ type: 'dashboard' })}
           onArchived={() => setView({ type: 'dashboard' })}

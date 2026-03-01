@@ -47,6 +47,7 @@ app.include_router(users.router, prefix="/api/v1")
 
 @app.websocket("/api/v1/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str):
+    await websocket.accept()
     try:
         verify_access_token(token)
     except Exception:
@@ -54,6 +55,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str):
         return
 
     await manager.connect(user_id, websocket)
+    
     heartbeat_task = None
     
     async def heartbeat():

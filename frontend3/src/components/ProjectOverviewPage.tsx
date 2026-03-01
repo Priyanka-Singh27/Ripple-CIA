@@ -10,106 +10,13 @@ import { cn } from "@/src/lib/utils";
 import { Particles } from "@/src/components/ui/particles";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { projectsApi, notificationsApi, ProjectData, ComponentItem, StrictnessMode, ComponentStatus, ActiveChange, Collaborator } from "@/src/lib/api";
+import { projectsApi, componentsApi, notificationsApi, ProjectData, ComponentItem, StrictnessMode, ComponentStatus, ActiveChange, Collaborator } from "@/src/lib/api";
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
 
-const MOCK_PROJECT: ProjectData = {
-    id: "proj-1",
-    name: "E-Commerce Platform",
-    description: "Full-stack marketplace with microservices architecture",
-    owner: { id: "me", name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-    isOwner: true,
-    strictnessMode: "soft",
-    createdAt: "Feb 21, 2026",
-    components: [
-        {
-            id: "c1", name: "Authentication",
-            status: "flagged", fileCount: 8,
-            contributors: [
-                { id: "u1", name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-                { id: "u2", name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-            ],
-            lastActivity: "2 hours ago", activeChanges: 2, isMyComponent: true,
-        },
-        {
-            id: "c2", name: "Dashboard UI",
-            status: "pending", fileCount: 14,
-            contributors: [
-                { id: "u3", name: "Raj Patel", initials: "RP", color: "from-amber-500 to-orange-600" },
-                { id: "u4", name: "Sarah Chen", initials: "SC", color: "from-rose-500 to-pink-600" },
-                { id: "u5", name: "Tom Ellis", initials: "TE", color: "from-blue-500 to-indigo-600" },
-            ],
-            lastActivity: "5 hours ago", activeChanges: 1, isMyComponent: false,
-        },
-        {
-            id: "c3", name: "Checkout & Payment",
-            status: "stable", fileCount: 11,
-            contributors: [
-                { id: "u2", name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-                { id: "u6", name: "Mia Wong", initials: "MW", color: "from-cyan-500 to-teal-600" },
-            ],
-            lastActivity: "Yesterday", activeChanges: 0, isMyComponent: true,
-        },
-        {
-            id: "c4", name: "API Gateway",
-            status: "stable", fileCount: 9,
-            contributors: [
-                { id: "u1", name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-                { id: "u3", name: "Raj Patel", initials: "RP", color: "from-amber-500 to-orange-600" },
-                { id: "u5", name: "Tom Ellis", initials: "TE", color: "from-blue-500 to-indigo-600" },
-                { id: "u7", name: "Dan Kim", initials: "DK", color: "from-purple-500 to-violet-600" },
-                { id: "u8", name: "Amy Lin", initials: "AL", color: "from-pink-500 to-rose-600" },
-            ],
-            lastActivity: "3 days ago", activeChanges: 0, isMyComponent: true,
-        },
-        {
-            id: "c5", name: "Notification Service",
-            status: "locked", fileCount: 6,
-            contributors: [
-                { id: "u4", name: "Sarah Chen", initials: "SC", color: "from-rose-500 to-pink-600" },
-            ],
-            lastActivity: "1 week ago", activeChanges: 0, isMyComponent: false,
-        },
-        {
-            id: "c6", name: "Search & Indexing",
-            status: "stable", fileCount: 12,
-            contributors: [
-                { id: "u6", name: "Mia Wong", initials: "MW", color: "from-cyan-500 to-teal-600" },
-                { id: "u7", name: "Dan Kim", initials: "DK", color: "from-purple-500 to-violet-600" },
-            ],
-            lastActivity: "2 days ago", activeChanges: 0, isMyComponent: false,
-        },
-    ],
-    activeChanges: [
-        {
-            id: "ch1",
-            title: "Updated validateUser signature",
-            author: { name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-            sourceComponent: "Authentication",
-            affectedComponents: ["Dashboard UI", "Checkout & Payment"],
-            acknowledgedCount: 1,
-            totalCount: 2,
-            submittedAgo: "1 hour ago",
-        },
-        {
-            id: "ch2",
-            title: "Refactored API route handlers",
-            author: { name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-            sourceComponent: "API Gateway",
-            affectedComponents: ["Authentication", "Notification Service"],
-            acknowledgedCount: 0,
-            totalCount: 2,
-            submittedAgo: "3 hours ago",
-        },
-    ],
-};
 
-const MOCK_USERS_SEARCH = [
-    { id: "s1", name: "James Wu", initials: "JW", color: "from-indigo-500 to-blue-600", email: "james@co.com" },
-    { id: "s2", name: "Nina Patel", initials: "NP", color: "from-pink-500 to-rose-600", email: "nina@co.com" },
-    { id: "s3", name: "Oscar Lee", initials: "OL", color: "from-teal-500 to-cyan-600", email: "oscar@co.com" },
-];
+
+
 
 // ─── Status + Strictness Config ───────────────────────────────────────────────
 
@@ -160,7 +67,7 @@ const ComponentCard = ({
     component: ComponentItem;
     isOwner: boolean;
     onOpenIDE: (c: ComponentItem) => void;
-    onMenuAction: (action: string, c: ComponentItem) => void;
+    onMenuAction: (action: string, c: ComponentItem) => void | Promise<void>;
 }) => {
     const [menuOpen, setMenuOpen] = useState(false);
     const canEdit = isOwner || component.isMyComponent;
@@ -351,15 +258,23 @@ const InviteSlideOver = ({
     const [selectedComponent, setSelectedComponent] = useState<string>("");
     const [sentSuccess, setSentSuccess] = useState(false);
 
-    const filtered = MOCK_USERS_SEARCH.filter(u =>
-        query.length > 1 &&
-        (u.name.toLowerCase().includes(query.toLowerCase()) || u.email.includes(query.toLowerCase()))
-    );
+    const { data: users = [] } = useQuery({
+        queryKey: ['users', query],
+        queryFn: () => notificationsApi.searchUsers(query),
+        enabled: query.length > 1
+    });
+
+    const createInvite = useMutation({
+        mutationFn: (email: string) => notificationsApi.createInvite(project.id, email, selectedComponent || undefined),
+        onSuccess: () => {
+            setSentSuccess(true);
+            setTimeout(() => { setSentSuccess(false); setQuery(""); setSelectedComponent(""); }, 3000);
+        }
+    });
 
     const handleSend = () => {
         if (!query) return;
-        setSentSuccess(true);
-        setTimeout(() => { setSentSuccess(false); setQuery(""); setSelectedComponent(""); }, 3000);
+        createInvite.mutate(query);
     };
 
     return (
@@ -397,15 +312,15 @@ const InviteSlideOver = ({
                                     />
                                 </div>
 
-                                {filtered.length > 0 && (
+                                {users.length > 0 && (
                                     <div className="bg-black/50 border border-white/10 rounded-xl overflow-hidden">
-                                        {filtered.map(u => (
+                                        {users.map(u => (
                                             <button
                                                 key={u.id}
-                                                onClick={() => setQuery(u.name)}
+                                                onClick={() => setQuery(u.email)}
                                                 className="flex items-center gap-3 w-full px-3 py-2.5 hover:bg-white/[0.05] transition-colors"
                                             >
-                                                <Avatar initials={u.initials} color={u.color} size="xs" />
+                                                <Avatar initials={u.handle?.substring(0, 2).toUpperCase() || "??"} color="from-violet-500 to-purple-600" size="xs" />
                                                 <div className="text-left">
                                                     <p className="text-xs font-medium text-white">{u.name}</p>
                                                     <p className="text-[10px] text-white/30">{u.email}</p>
@@ -483,11 +398,38 @@ export const ProjectOverviewPage = ({
     onReviewChange,
     onOpenSettings,
 }: ProjectOverviewPageProps) => {
-    const project = MOCK_PROJECT; // In production: fetched by projectId
+    const { data: project, isLoading } = useQuery({
+        queryKey: ['project', projectId],
+        queryFn: () => projectId ? projectsApi.getProject(projectId) : Promise.reject("No projectId"),
+        enabled: !!projectId
+    });
+    const queryClient = useQueryClient();
+
     const [showInvite, setShowInvite] = useState(false);
     const [menuAction, setMenuAction] = useState<{ action: string; component: ComponentItem } | null>(null);
 
-    const strictness = STRICTNESS_CFG[project.strictnessMode];
+    const handleMenuAction = async (action: string, component: ComponentItem) => {
+        if (!project) return;
+        try {
+            if (action === "delete") {
+                await componentsApi.delete(project.id, component.id);
+            } else if (action === "lock") {
+                await componentsApi.update(project.id, component.id, { status: component.status === "locked" ? "stable" : "locked" });
+            } else if (action === "rename") {
+                const newName = prompt("Enter new name:", component.name);
+                if (newName) await componentsApi.update(project.id, component.id, { name: newName });
+            }
+            queryClient.invalidateQueries({ queryKey: ['project', project.id] });
+        } catch (e) {
+            console.error("Action failed", e);
+        }
+    };
+
+    if (isLoading || !project) {
+        return <div className="flex h-screen items-center justify-center bg-black text-white">Loading project...</div>;
+    }
+
+    const strictness = STRICTNESS_CFG[project.strictnessMode] || STRICTNESS_CFG.soft;
     const StrictnessIcon = strictness.icon;
 
     const totalContributors = new Set(project.components.flatMap(c => c.contributors.map(ct => ct.id))).size;
@@ -620,7 +562,7 @@ export const ProjectOverviewPage = ({
                                     component={component}
                                     isOwner={project.isOwner}
                                     onOpenIDE={handleOpenIDE}
-                                    onMenuAction={(action, c) => setMenuAction({ action, component: c })}
+                                    onMenuAction={(action, c) => handleMenuAction(action, c)}
                                 />
                             ))}
                         </div>

@@ -21,7 +21,6 @@ class ConnectionManager:
         self.active_connections: dict[str, list[WebSocket]] = {}
 
     async def connect(self, user_id: str, websocket: WebSocket) -> None:
-        await websocket.accept()
         if user_id not in self.active_connections:
             self.active_connections[user_id] = []
         self.active_connections[user_id].append(websocket)

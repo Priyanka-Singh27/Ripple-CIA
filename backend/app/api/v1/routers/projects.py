@@ -9,7 +9,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.models.project import Project
 from app.models.component import Component, ComponentContributor
-from app.models.change import ChangeRequest
+from app.models.change import ChangeRequest, Invite
 
 from pydantic import BaseModel
 
@@ -255,6 +255,34 @@ async def update_project(project_id: str, req: ProjectUpdate, db: AsyncSession =
             "icon": project.icon,
             "updated_at": project.updated_at.isoformat()
         }
+    }
+
+@router.get("/{project_id}/invites")
+async def get_project_invites(project_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    res = await db.execute(select(Project).where(Project.id == project_id))
+    proj = res.scalars().first()
+    if not proj or proj.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only project owner can view invites")
+        
+    invites_res = await db.execute(
+        select(Invite).where(Invite.project_id == project_id, Invite.status == "pending")
+    )
+    invites = invites_res.scalars().all()
+    
+    components_res = await db.execute(select(Component).where(Component.project_id == project_id))
+    components_map = {c.id: c.name for c in components_res.scalars().all()}
+    
+    return {
+        "data": [
+            {
+                "id": i.id,
+                "email": i.invited_email,
+                "status": i.status,
+                "component_name": components_map.get(i.component_id, "Project-wide") if i.component_id else "Project-wide",
+                "created_at": i.created_at.isoformat()
+            }
+            for i in invites
+        ]
     }
 
 @router.post("/{project_id}/confirm")

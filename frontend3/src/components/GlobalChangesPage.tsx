@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { ArrowLeft, GitBranch, Search, Filter, CheckCircle2, Clock, AlertCircle } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "./ui/particles";
+import { useQuery } from "@tanstack/react-query";
+import { changesApi } from "@/src/lib/api";
 
 type ChangeStatus = "needs_action" | "submitted" | "resolved";
 
@@ -74,7 +76,54 @@ export const GlobalChangesPage = ({ onBack }: { onBack: () => void }) => {
     const [filter, setFilter] = useState<"all" | "needs_action" | "submitted">("all");
     const [query, setQuery] = useState("");
 
-    const filteredChanges = MOCK_CHANGES.filter(c => {
+    const { data: myChanges = [], isLoading: loadingMine } = useQuery({
+        queryKey: ['globalChanges', 'mine'],
+        queryFn: () => changesApi.listGlobal('mine')
+    });
+
+    const { data: affectedChanges = [], isLoading: loadingAffected } = useQuery({
+        queryKey: ['globalChanges', 'affected'],
+        queryFn: () => changesApi.listGlobal('affected')
+    });
+
+    // Map `affectedChanges` to needsAction
+    const rawNeedsAction = affectedChanges.filter(c => c.status === "pending_analysis" || c.status === "in_review" || c.status === "pending_review").map(c => ({
+        id: c.id,
+        title: c.title,
+        project: "Project", // Backend doesn't return project name directly here without relation loading, using fallback
+        component: "Component",
+        author: "Author",
+        status: "needs_action" as const,
+        time: new Date(c.created_at).toLocaleDateString(),
+        impactDetails: "Your component is affected",
+    }));
+
+    // Map `myChanges` to submitted / resolved
+    const rawSubmitted = myChanges.filter(c => c.status === "pending_analysis" || c.status === "in_review" || c.status === "pending_review").map(c => ({
+        id: c.id,
+        title: c.title,
+        project: "Project",
+        component: "Component",
+        author: "Me",
+        status: "submitted" as const,
+        time: new Date(c.created_at).toLocaleDateString(),
+        acknowledgedCount: 0,
+        totalRequired: 0,
+    }));
+
+    const rawResolved = myChanges.filter(c => c.status === "approved" || c.status === "rejected").map(c => ({
+        id: c.id,
+        title: c.title,
+        project: "Project",
+        component: "Component",
+        author: "Me",
+        status: "resolved" as const,
+        time: new Date(c.created_at).toLocaleDateString(),
+    }));
+
+    const allResolvedChanges = [...rawNeedsAction, ...rawSubmitted, ...rawResolved];
+
+    const filteredChanges = allResolvedChanges.filter(c => {
         const matchesSearch = c.title.toLowerCase().includes(query.toLowerCase()) ||
             c.project.toLowerCase().includes(query.toLowerCase());
 
@@ -108,6 +157,7 @@ export const GlobalChangesPage = ({ onBack }: { onBack: () => void }) => {
                                 <GitBranch className="h-4 w-4 text-white" />
                             </div>
                             <h1 className="text-lg font-bold">My Changes</h1>
+                            {(loadingMine || loadingAffected) && <span className="text-xs text-white/50 ml-4 animate-pulse">Loading...</span>}
                         </div>
                     </div>
                 </header>

@@ -9,6 +9,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
 import { Particles } from "@/src/components/ui/particles";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { changesApi, authApi } from "@/src/lib/api";
+import { authStore } from "@/src/lib/authStore";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -739,15 +742,92 @@ export const ChangeReviewPage = ({
     onBack,
     onMerged,
 }: ChangeReviewPageProps) => {
-    const [change, setChange] = useState<ChangeData>(MOCK_CHANGE);
-    const [role, setRole] = useState<ViewRole>("author");
+    const { user } = authStore();
+    const queryClient = useQueryClient();
+
+    const { data: impactRes, isLoading } = useQuery({
+        queryKey: ['impact', changeId],
+        queryFn: () => changesApi.getImpact(changeId)
+    });
+
+    const ackMut = useMutation({
+        mutationFn: () => changesApi.acknowledge(changeId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['impact', changeId] });
+        }
+    });
+
+    const approveMut = useMutation({
+        mutationFn: () => changesApi.approve(changeId)
+    });
+
+    const { data: allChanges } = useQuery({
+        queryKey: ['changes', projectId],
+        queryFn: () => changesApi.list(projectId),
+    });
+
     const [merged, setMerged] = useState(false);
     const [revisionsRequested, setRevisionsRequested] = useState(false);
 
-    const handleApprove = () => {
-        setMerged(true);
-        setTimeout(onMerged, 2000);
+    const handleApprove = async () => {
+        try {
+            await approveMut.mutateAsync();
+            setMerged(true);
+            setTimeout(onMerged, 2000);
+        } catch (e) {
+            console.error(e);
+        }
     };
+
+    const handleAcknowledge = async () => {
+        try {
+            await ackMut.mutateAsync();
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
+    const handleDismiss = async (cid: string) => {
+        // Not implemented on backend yet or missed. Do local only for now.
+    }
+
+    if (isLoading) {
+        return <div className="flex h-screen items-center justify-center bg-black text-white">Loading review...</div>;
+    }
+
+    // Merge mock with dynamic impact data
+    const crInfo = allChanges?.find(c => c.id === changeId);
+    const change = { ...MOCK_CHANGE };
+
+    if (crInfo) {
+        change.title = crInfo.title;
+        change.status = crInfo.status as ChangeStatus;
+        change.createdAgo = crInfo.created_at;
+    }
+
+    if (impactRes) {
+        change.status = impactRes.status as ChangeStatus;
+        change.affectedContributors = impactRes.impacts.map(imp => ({
+            id: imp.id,
+            name: imp.contributor_name,
+            initials: imp.contributor_name.substring(0, 2).toUpperCase(),
+            color: "from-blue-500 to-indigo-600",
+            component: imp.component_name,
+            ackStatus: imp.dismissed ? "auto_confirmed" : (imp.acknowledged ? "confirmed" : "waiting"),
+            detectionMethod: imp.detection_method as "parser" | "llm",
+            confidence: imp.confidence as "high" | "medium" | "low"
+        }));
+    }
+
+    // Determine default ViewRole
+    let role: ViewRole = "author";
+    if (crInfo?.author_id === user?.id) {
+        role = "author";
+    } else if (impactRes?.impacts.some(i => i.contributor_id === user?.id)) {
+        role = "contributor";
+    } else {
+        role = "owner";
+    }
 
     const roleLabels: { key: ViewRole; label: string }[] = [
         { key: "author", label: "Author view" },
@@ -808,23 +888,6 @@ export const ChangeReviewPage = ({
                                 In Review
                             </span>
                         </div>
-
-                        {/* Role switcher for demo */}
-                        <div className="flex items-center gap-1 bg-white/[0.04] border border-white/[0.08] rounded-xl p-1">
-                            {roleLabels.map(({ key, label }) => (
-                                <button
-                                    key={key}
-                                    id={`role-${key}`}
-                                    onClick={() => setRole(key)}
-                                    className={cn(
-                                        "px-3 py-1 text-[11px] font-medium rounded-lg transition-colors",
-                                        role === key ? "bg-white/15 text-white" : "text-white/35 hover:text-white/60"
-                                    )}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
                     </div>
 
                     {/* Change meta */}
@@ -871,19 +934,10 @@ export const ChangeReviewPage = ({
                         />
                     )}
                     {role === "contributor" && (
-                        <ContributorPanel
-                            change={change}
-                            onAcknowledge={(note) => { }}
-                            onDismiss={() => { }}
-                        />
+                        <ContributorPanel change={change} onAcknowledge={handleAcknowledge} onDismiss={handleDismiss} />
                     )}
                     {role === "owner" && (
-                        <OwnerPanel
-                            change={change}
-                            onApprove={handleApprove}
-                            onRequestRevisions={() => setRevisionsRequested(true)}
-                            onReject={onBack}
-                        />
+                        <OwnerPanel change={change} onApprove={handleApprove} onRequestRevisions={() => setRevisionsRequested(true)} onReject={() => setRevisionsRequested(true)} />
                     )}
                 </div>
 

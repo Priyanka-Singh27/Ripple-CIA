@@ -397,31 +397,37 @@ async def dismiss_impact(change_id: str, component_id: str, db: AsyncSession = D
     return {"data": {"dismissed": True}}
 
 @router.get("/changes")
-async def list_global_changes(scope: str = "mine", db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if scope != "mine":
+async def list_global_changes(scope: str = Query("mine"), db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if scope not in ["mine", "affected"]:
         raise HTTPException(status_code=400, detail="Scope not supported")
         
-    # Submitted by me
-    my_res = await db.execute(select(ChangeRequest).where(ChangeRequest.author_id == current_user.id))
-    submitted = my_res.scalars().all()
-    
-    # Needs my action
-    act_res = await db.execute(
-        select(ChangeImpact.change_request_id)
-        .where(
-            ChangeImpact.contributor_id == current_user.id,
-            ChangeImpact.acknowledged == False,
-            ChangeImpact.dismissed == False
+    if scope == "mine":
+        my_res = await db.execute(select(ChangeRequest).where(ChangeRequest.author_id == current_user.id))
+        changes = my_res.scalars().all()
+    else:  # affected
+        act_res = await db.execute(
+            select(ChangeImpact.change_request_id)
+            .where(
+                ChangeImpact.contributor_id == current_user.id,
+                ChangeImpact.acknowledged == False,
+                ChangeImpact.dismissed == False
+            )
         )
-    )
-    needs_action_ids = set(act_res.scalars().all())
-    
-    action_changes = []
-    if needs_action_ids:
-        res2 = await db.execute(select(ChangeRequest).where(ChangeRequest.id.in_(needs_action_ids)))
-        action_changes = res2.scalars().all()
-        
-    return {"data": {
-        "submitted_by_me": [{"id": c.id, "title": c.title, "status": c.status} for c in submitted],
-        "needs_my_action": [{"id": c.id, "title": c.title, "status": c.status} for c in action_changes]
-    }}
+        needs_action_ids = set(act_res.scalars().all())
+        changes = []
+        if needs_action_ids:
+            res2 = await db.execute(select(ChangeRequest).where(ChangeRequest.id.in_(needs_action_ids)))
+            changes = res2.scalars().all()
+            
+    return {"data": [
+        {
+            "id": c.id, 
+            "title": c.title, 
+            "status": c.status,
+            "project_id": c.project_id,
+            "component_id": c.component_id,
+            "author_id": c.author_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None
+        } 
+        for c in changes
+    ]}
