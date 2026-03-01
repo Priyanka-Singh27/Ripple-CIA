@@ -1,36 +1,27 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1.routers import auth, projects, components, files, changes, notifications, websockets
+from app.api.v1.routers import auth, projects, components, files, changes, notifications, users
 from app.core.config import settings
-from app.core.websocket import listen_to_redis
+from app.core.websocket import manager, redis_listener
+from app.core.storage import ensure_bucket_exists
+from app.core.security import verify_access_token
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start background Redis listener for WebSockets
-    redis_listener_task = asyncio.create_task(listen_to_redis())
+    ensure_bucket_exists()
     
-    # Startup: Ensure MinIO buckets exist
-    from app.core.storage import get_s3
-    s3 = get_s3()
-    try:
-        s3.head_bucket(Bucket=settings.minio_bucket)
-    except Exception:
-        # We can't actually do this without MinIO running, so we just pass for now
-        pass
-        
+    redis_listener_task = asyncio.create_task(redis_listener(manager))
     yield
-    
-    # Shutdown
     redis_listener_task.cancel()
 
 
 app = FastAPI(
-    title=settings.project_name,
+    title="Ripple",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -38,7 +29,7 @@ app = FastAPI(
 # CORS config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Vite frontend
+    allow_origins=settings.allowed_origins.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,7 +42,43 @@ app.include_router(components.router, prefix="/api/v1")
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(changes.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
-app.include_router(websockets.router, prefix="/api/v1")
+app.include_router(users.router, prefix="/api/v1")
+
+
+@app.websocket("/api/v1/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str, token: str):
+    try:
+        verify_access_token(token)
+    except Exception:
+        await websocket.close(code=4001)
+        return
+
+    await manager.connect(user_id, websocket)
+    heartbeat_task = None
+    
+    async def heartbeat():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                await websocket.send_json({"event": "ping"})
+        except Exception:
+            pass
+
+    try:
+        heartbeat_task = asyncio.create_task(heartbeat())
+        while True:
+            data = await websocket.receive_json()
+            if data.get("event") == "reconnect":
+                # Handle reconnect logic by replaying missed notifications
+                pass
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+        await manager.disconnect(user_id, websocket)
 
 
 @app.get("/health")

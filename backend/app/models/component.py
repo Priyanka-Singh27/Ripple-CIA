@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -51,9 +51,11 @@ class ComponentContributor(Base):
         default="contributor",
         nullable=False,
     )
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    granted_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     component: Mapped["Component"] = relationship(back_populates="contributors")
-    user: Mapped["User"] = relationship()  # type: ignore[name-defined]
+    user: Mapped["User"] = relationship(foreign_keys=[user_id])  # type: ignore[name-defined]
 
 
 class ComponentDependency(Base):
@@ -83,6 +85,7 @@ class ProjectFile(Base):
     language: Mapped[str] = mapped_column(String(50), default="TypeScript")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     s3_key: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     parsed_symbols: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -97,7 +100,9 @@ class FileDraft(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     file_id: Mapped[str] = mapped_column(ForeignKey("project_files.id", ondelete="CASCADE"), nullable=False, index=True)
     author_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    s3_draft_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    s3_draft_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     file: Mapped["ProjectFile"] = relationship(back_populates="drafts")
@@ -110,7 +115,21 @@ class ProjectSnapshot(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    s3_manifest_key: Mapped[str] = mapped_column(Text, nullable=False)
+    change_request_id: Mapped[str | None] = mapped_column(ForeignKey("change_requests.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped["Project"] = relationship(back_populates="snapshots")  # type: ignore[name-defined]
+    files: Mapped[list["SnapshotFile"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan")
+
+
+class SnapshotFile(Base):
+    __tablename__ = "snapshot_files"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("project_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey("project_files.id", ondelete="SET NULL"), nullable=True)
+    s3_key: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    snapshot: Mapped["ProjectSnapshot"] = relationship(back_populates="files")
+    file: Mapped["ProjectFile"] = relationship()

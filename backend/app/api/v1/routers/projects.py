@@ -1,27 +1,294 @@
-from fastapi import APIRouter
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_, func
+from sqlalchemy.orm import selectinload
+
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.models.user import User
+from app.models.project import Project
+from app.models.component import Component, ComponentContributor
+from app.models.change import ChangeRequest
+
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+class ProjectCreate(BaseModel):
+    name: str
+    description: str = ""
+    color: str = "from-violet-500 to-purple-600"
+    icon: str = "box"
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    color: str | None = None
+    icon: str | None = None
+    strictness_mode: str | None = None
+
 @router.post("")
-async def create_project():
-    pass
+async def create_project(req: ProjectCreate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Create the project with status draft
+    new_project = Project(
+        owner_id=current_user.id,
+        name=req.name,
+        description=req.description,
+        color=req.color,
+        icon=req.icon,
+        status="draft"
+    )
+    db.add(new_project)
+    await db.flush() # flush to get an ID
+
+    # Create root component
+    root_component = Component(
+        project_id=new_project.id,
+        name="Root",
+        color=req.color,
+        status="stable"
+    )
+    db.add(root_component)
+    await db.flush()
+
+    # Create ComponentContributor row giving owner full access
+    contrib = ComponentContributor(
+        component_id=root_component.id,
+        user_id=current_user.id,
+        role="owner",
+        granted_by=current_user.id
+    )
+    db.add(contrib)
+    await db.commit()
+    await db.refresh(new_project)
+    
+    # Return 201 response directly
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=201, content={
+        "data": {
+            "id": new_project.id,
+            "name": new_project.name,
+            "description": new_project.description,
+            "status": new_project.status,
+            "color": new_project.color,
+            "icon": new_project.icon,
+            "created_at": new_project.created_at.isoformat()
+        }
+    })
 
 @router.get("")
-async def list_projects():
-    pass
+async def list_projects(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # Query all projects where user is owner, OR user has component contributor row
+    query = (
+        select(Project)
+        .outerjoin(Component, Component.project_id == Project.id)
+        .outerjoin(ComponentContributor, ComponentContributor.component_id == Component.id)
+        .where(
+            or_(
+                Project.owner_id == current_user.id,
+                ComponentContributor.user_id == current_user.id
+            )
+        )
+        .distinct()
+    )
+    res = await db.execute(query)
+    projects = res.scalars().all()
+    
+    # Not efficient N+1 per requirement wait. The requirement says:
+    # "do this with a single JOIN query, not N+1 loops"
+    # To do that, we need a CTE or subqueries.
+    # Refactoring the query to get stats:
+    
+    stats_query = (
+        select(
+            Project.id.label("project_id"),
+            Project.name,
+            Project.description,
+            Project.color,
+            Project.icon,
+            Project.status,
+            Project.created_at,
+            func.count(func.distinct(Component.id)).label("component_count"),
+            func.count(func.distinct(ComponentContributor.user_id)).label("contributor_count") # this assumes all unique users across components
+        )
+        .outerjoin(Component, Component.project_id == Project.id)
+        .outerjoin(ComponentContributor, ComponentContributor.component_id == Component.id)
+        .where(
+            or_(
+                Project.owner_id == current_user.id,
+                Project.id.in_(
+                    select(Component.project_id)
+                    .join(ComponentContributor, ComponentContributor.component_id == Component.id)
+                    .where(ComponentContributor.user_id == current_user.id)
+                )
+            )
+        )
+        .group_by(Project.id)
+    )
+    stats_res = await db.execute(stats_query)
+    
+    data = []
+    for row in stats_res.fetchall():
+        data.append({
+            "id": row.project_id,
+            "name": row.name,
+            "description": row.description,
+            "color": row.color,
+            "icon": row.icon,
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "component_count": row.component_count,
+            "contributor_count": row.contributor_count
+        })
+    return {"data": data}
 
 @router.get("/{project_id}")
-async def get_project(project_id: str):
-    pass
+async def get_project(project_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    # 1. Fetch project
+    res = await db.execute(select(Project).where(Project.id == project_id))
+    project = res.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    # 2. Verify access (owner or inherited via components)
+    if project.owner_id != current_user.id:
+        has_access = await db.execute(
+            select(ComponentContributor)
+            .join(Component)
+            .where(Component.project_id == project_id, ComponentContributor.user_id == current_user.id)
+        )
+        if not has_access.scalars().first():
+            raise HTTPException(status_code=403, detail="Not authorized to view this project")
+
+    # 3. Fetch components with contributors and files
+    comp_res = await db.execute(
+        select(Component)
+        .options(
+            selectinload(Component.contributors).selectinload(ComponentContributor.user),
+            selectinload(Component.files)
+        )
+        .where(Component.project_id == project_id)
+    )
+    components = comp_res.scalars().all()
+    
+    # 4. Compute active_change_count
+    ch_res = await db.execute(
+        select(func.count(ChangeRequest.id))
+        .where(
+            ChangeRequest.project_id == project_id,
+            ChangeRequest.status.in_(["pending_analysis", "analysis_complete", "pending_review"])
+        )
+    )
+    active_change_count = ch_res.scalar_one()
+    
+    return {
+        "data": {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "strictness_mode": project.strictness_mode,
+            "status": project.status,
+            "color": project.color,
+            "icon": project.icon,
+            "created_at": project.created_at.isoformat(),
+            "owner_id": project.owner_id,
+            "active_change_count": active_change_count,
+            "components": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "color": c.color,
+                    "status": c.status,
+                    "file_count": len(c.files),
+                    "contributors": [
+                        {
+                            "user_id": ccb.user.id,
+                            "role": ccb.role,
+                            "display_name": ccb.user.display_name,
+                            "email": ccb.user.email,
+                            "avatar_url": ccb.user.avatar_url
+                        }
+                        for ccb in c.contributors
+                    ]
+                }
+                for c in components
+            ]
+        }
+    }
 
 @router.patch("/{project_id}")
-async def update_project(project_id: str):
-    pass
-
-@router.delete("/{project_id}")
-async def delete_project(project_id: str):
-    pass
+async def update_project(project_id: str, req: ProjectUpdate, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    res = await db.execute(select(Project).where(Project.id == project_id))
+    project = res.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only owner can modify project")
+        
+    if req.name is not None:
+        project.name = req.name
+    if req.description is not None:
+        project.description = req.description
+    if req.strictness_mode is not None:
+        project.strictness_mode = req.strictness_mode
+    if req.color is not None:
+        project.color = req.color
+    if req.icon is not None:
+        project.icon = req.icon
+        
+    from datetime import datetime, timezone
+    project.updated_at = datetime.now(timezone.utc)
+    
+    await db.commit()
+    await db.refresh(project)
+    
+    return {
+        "data": {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "strictness_mode": project.strictness_mode,
+            "status": project.status,
+            "color": project.color,
+            "icon": project.icon,
+            "updated_at": project.updated_at.isoformat()
+        }
+    }
 
 @router.post("/{project_id}/confirm")
-async def confirm_project_setup(project_id: str):
-    pass
+async def confirm_project_setup(project_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    res = await db.execute(select(Project).where(Project.id == project_id))
+    project = res.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only owner can confirm project setup")
+        
+    project.status = "active"
+    await db.commit()
+    
+    return {"data": {"status": "active", "id": project.id}}
+
+@router.delete("/{project_id}")
+async def delete_project(project_id: str, action: str = Query("delete"), db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    res = await db.execute(select(Project).where(Project.id == project_id))
+    project = res.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only owner can delete project")
+        
+    if action == "archive":
+        project.status = "archived"
+        await db.commit()
+    elif action == "delete":
+        await db.delete(project)
+        await db.commit()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action parameter")
+        
+    return {"data": None, "message": "Operation successful"}

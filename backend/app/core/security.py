@@ -2,49 +2,94 @@ from datetime import datetime, timedelta, timezone
 import secrets
 import hashlib
 
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models.user import User
 
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 ALGORITHM = "HS256"
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password=pwd_bytes, salt=salt)
+    return hashed_password.decode('utf-8')
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    password_byte_enc = plain.encode('utf-8')
+    hashed_password = hashed.encode('utf-8')
+    return bcrypt.checkpw(password=password_byte_enc, hashed_password=hashed_password)
 
 
-def create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.access_token_expire_minutes
-    )
-    payload = {"sub": user_id, "exp": expire, "type": "access"}
-    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+def create_access_token(data: dict) -> str:
+    to_encode = data.copy()
+    minutes = int(settings.jwt_expires_in.replace("m", ""))
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    
+    to_encode.update({
+        "exp": expire,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    })
+    
+    encoded_jwt = jwt.encode(to_encode, settings.jwt_secret, algorithm=ALGORITHM)
+    return encoded_jwt
 
 
-def decode_access_token(token: str) -> str | None:
-    """Returns user_id string or None if invalid/expired."""
-    try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        if payload.get("type") != "access":
-            return None
-        return payload.get("sub")
-    except JWTError:
-        return None
-
-
-def generate_refresh_token() -> tuple[str, str]:
+def create_refresh_token() -> tuple[str, str]:
     """Returns (raw_token, hashed_token). Store the hash, give the raw to client."""
-    raw = secrets.token_urlsafe(32)
+    raw = secrets.token_hex(32)
     hashed = hashlib.sha256(raw.encode()).hexdigest()
     return raw, hashed
 
 
 def hash_refresh_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def verify_access_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(
+            token, 
+            settings.jwt_secret, 
+            algorithms=[ALGORITHM],
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience
+        )
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    payload = verify_access_token(token)
+    user_id: str | None = payload.get("userId")
+    if user_id is None:
+        raise credentials_exception
+        
+    user = await db.get(User, user_id)
+    if user is None:
+        raise credentials_exception
+    return user
+
+

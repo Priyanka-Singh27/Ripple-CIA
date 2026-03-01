@@ -6,6 +6,9 @@ import {
     Waves, AlertCircle, Zap, Lock
 } from "lucide-react";
 import { cn } from "@/src/lib/utils";
+import { projectsApi, filesApi, componentsApi, notificationsApi } from "@/src/lib/api";
+import { useQuery, useMutation } from '@tanstack/react-query';
+import axios from 'axios';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +25,7 @@ interface WizardState {
     githubBranch: string;
     uploadedFiles: MockFile[];
     parsingComplete: boolean;
+    projectId: string | null;
     // Step 3
     components: ComponentDef[];
     // Step 4
@@ -51,6 +55,7 @@ interface ContributorAssignment {
     initials: string;
     avatarColor: string;
     role: "contributor" | "read_only";
+    email?: string;
 }
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
@@ -191,33 +196,115 @@ const Step2Files = ({ state, setState }: { state: WizardState; setState: React.D
     const [dragOver, setDragOver] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const simulateParsing = useCallback(() => {
-        setIsParsing(true);
-        setParseProgress(0);
-        let p = 0;
-        const iv = setInterval(() => {
-            p += Math.random() * 18;
-            if (p >= 100) {
-                clearInterval(iv);
-                setParseProgress(100);
-                setIsParsing(false);
-                setShowTree(true);
-                setState(s => ({ ...s, uploadedFiles: MOCK_PARSED_FILES, parsingComplete: true }));
-            } else {
-                setParseProgress(p);
+    const uploadFilesMut = useMutation({
+        mutationFn: async (files: File[]) => {
+            if (!state.projectId) throw new Error("No project ID");
+
+            // filtered
+            const valid = files.filter(f => !f.webkitRelativePath.includes('node_modules/') && !f.webkitRelativePath.includes('.git/') && f.size > 0);
+
+            setIsParsing(true);
+            setParseProgress(10);
+
+            // 1. Get presigned URLs
+            const req = valid.map(f => ({
+                path: f.webkitRelativePath || f.name,
+                size_bytes: f.size,
+                language: f.name.split('.').pop() || 'text'
+            }));
+
+            const urls = await filesApi.requestUploadUrls(state.projectId, req);
+            setParseProgress(30);
+
+            // 2. Upload each
+            await Promise.all(urls.map(async (u, i) => {
+                const file = valid[i];
+                await axios.put(u.upload_url, file, { headers: { 'Content-Type': file.type || 'text/plain' } });
+            }));
+            setParseProgress(60);
+
+            // 3. Confirm
+            await filesApi.confirmBatch(state.projectId, urls.map(u => u.file_id));
+            setParseProgress(90);
+
+            // 4. Update the state
+            const serverFiles = await filesApi.list(state.projectId);
+            setState(s => ({
+                ...s,
+                uploadedFiles: serverFiles.map(f => ({
+                    id: f.id,
+                    name: f.path.split('/').pop() || f.path,
+                    path: f.path,
+                    language: f.language,
+                    size: `${(f.size_bytes / 1024).toFixed(1)} KB`,
+                    componentId: null
+                })),
+                parsingComplete: true
+            }));
+            setIsParsing(false);
+            setParseProgress(100);
+            setShowTree(true);
+        }
+    });
+
+    const githubPreviewMut = useMutation({
+        mutationFn: async () => {
+            if (!state.projectId) throw new Error("No project ID");
+            setIsParsing(true);
+            setParseProgress(20);
+            return await filesApi.githubPreview(state.projectId, state.githubUrl);
+        },
+        onSuccess: (data) => {
+            setParseProgress(50);
+            githubConfirmMut.mutate(data);
+        },
+        onError: () => setIsParsing(false)
+    });
+
+    const githubConfirmMut = useMutation({
+        mutationFn: async (data: { owner: string; repo: string; files: { path: string }[] }) => {
+            if (!state.projectId) throw new Error("No project ID");
+            return await filesApi.githubConfirm(state.projectId, data.owner, data.repo, data.files.map(f => f.path));
+        },
+        onSuccess: async () => {
+            setParseProgress(80);
+            if (state.projectId) {
+                const serverFiles = await filesApi.list(state.projectId);
+                setState(s => ({
+                    ...s,
+                    uploadedFiles: serverFiles.map((f: any) => ({
+                        id: f.id,
+                        name: f.path.split('/').pop() || f.path,
+                        path: f.path,
+                        language: f.language,
+                        size: `${(f.size_bytes / 1024).toFixed(1)} KB`,
+                        componentId: null
+                    })),
+                    parsingComplete: true
+                }));
             }
-        }, 180);
-    }, [setState]);
+            setIsParsing(false);
+            setParseProgress(100);
+            setShowTree(true);
+        },
+        onError: () => setIsParsing(false)
+    });
+
+    const handleInputFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files) uploadFilesMut.mutate(Array.from(e.target.files));
+    };
 
     const handleGithubImport = () => {
-        if (!state.githubUrl) return;
-        simulateParsing();
+        if (!state.githubUrl || !state.projectId) return;
+        githubPreviewMut.mutate();
     };
 
     const handleFolderDrop = (e: React.DragEvent) => {
         e.preventDefault();
         setDragOver(false);
-        simulateParsing();
+        if (e.dataTransfer.files) {
+            uploadFilesMut.mutate(Array.from(e.dataTransfer.files));
+        }
     };
 
     return (
@@ -294,7 +381,7 @@ const Step2Files = ({ state, setState }: { state: WizardState; setState: React.D
                         dragOver ? "border-white/40 bg-white/[0.06]" : "border-white/[0.10] hover:border-white/20 hover:bg-white/[0.03]"
                     )}
                 >
-                    <input ref={fileInputRef} type="file" multiple className="hidden" onChange={simulateParsing} />
+                    <input ref={fileInputRef} type="file" multiple {...{ webkitdirectory: "", directory: "" }} className="hidden" onChange={handleInputFiles} />
                     <Upload className={cn("h-8 w-8 transition-colors", dragOver ? "text-white" : "text-white/25")} />
                     <div className="text-center">
                         <p className="text-sm font-medium text-white/60">Drop your folder here</p>
@@ -501,24 +588,55 @@ const Step3Components = ({ state, setState }: { state: WizardState; setState: Re
     );
 };
 
+// --- Helpers ---
+const generateInitials = (name?: string, email?: string) => {
+    if (name) return name.substring(0, 2).toUpperCase();
+    if (email) return email.substring(0, 2).toUpperCase();
+    return "??";
+};
+
+const getAvatarColor = (idx: number) => {
+    const colors = [
+        "from-emerald-500 to-green-600",
+        "from-amber-500 to-orange-600",
+        "from-rose-500 to-pink-600",
+        "from-blue-500 to-indigo-600",
+        "from-violet-500 to-purple-600",
+        "from-cyan-500 to-teal-600"
+    ];
+    return colors[idx % colors.length];
+};
+
 // ─── Step 4: Assign Contributors ──────────────────────────────────────────────
 
 const Step4Contributors = ({ state, setState }: { state: WizardState; setState: React.Dispatch<React.SetStateAction<WizardState>> }) => {
     const [query, setQuery] = useState("");
     const [activeCompId, setActiveCompId] = useState<string | null>(state.components[0]?.id ?? null);
 
-    const filtered = MOCK_USERS.filter(u => query.length > 1 &&
-        (u.name.toLowerCase().includes(query.toLowerCase()) || u.email.includes(query.toLowerCase())));
+    const { data: searchResults = [] } = useQuery({
+        queryKey: ['searchUsers', query],
+        queryFn: () => notificationsApi.searchUsers(query),
+        enabled: query.length > 1
+    });
+
+    const filtered = searchResults;
 
     const activeComp = state.components.find(c => c.id === activeCompId);
 
-    const addContributor = (user: typeof MOCK_USERS[0]) => {
-        if (!activeCompId) return;
+    const addContributor = (user: any) => {
+        if (!activeCompId || !state.projectId) return;
+
+        componentsApi.addContributor(state.projectId, activeCompId, user.id, "contributor");
+        notificationsApi.createInvite(state.projectId, user.email, activeCompId);
+
+        const color = getAvatarColor(user.id.charCodeAt(0));
+        const init = generateInitials(user.name || user.display_name, user.email);
+
         setState(s => ({
             ...s,
             components: s.components.map(c =>
                 c.id === activeCompId && !c.contributors.find(ct => ct.id === user.id)
-                    ? { ...c, contributors: [...c.contributors, { ...user, role: "contributor" }] }
+                    ? { ...c, contributors: [...c.contributors, { id: user.id, name: user.display_name || user.name || "Unknown", initials: init, avatarColor: color, email: user.email, role: "contributor" }] }
                     : c
             ),
         }));
@@ -526,6 +644,8 @@ const Step4Contributors = ({ state, setState }: { state: WizardState; setState: 
     };
 
     const removeContributor = (compId: string, userId: string) => {
+        if (!state.projectId) return;
+        componentsApi.removeContributor(state.projectId, compId, userId);
         setState(s => ({
             ...s,
             components: s.components.map(c =>
@@ -596,8 +716,8 @@ const Step4Contributors = ({ state, setState }: { state: WizardState; setState: 
                                         onClick={() => addContributor(u)}
                                         className="flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.05] cursor-pointer transition-colors"
                                     >
-                                        <div className={cn("h-7 w-7 rounded-full bg-gradient-to-br flex items-center justify-center text-[10px] font-bold text-white", u.avatarColor)}>
-                                            {u.initials}
+                                        <div className={cn("h-7 w-7 rounded-full bg-gradient-to-br flex items-center justify-center text-[10px] font-bold text-white", getAvatarColor(u.id.charCodeAt(0)))}>
+                                            {generateInitials(u.name, u.email)}
                                         </div>
                                         <div>
                                             <p className="text-xs font-medium text-white">{u.name}</p>
@@ -613,9 +733,9 @@ const Step4Contributors = ({ state, setState }: { state: WizardState; setState: 
                         <div className="flex-1 overflow-y-auto space-y-2">
                             {/* Auto-added owner */}
                             <div className="flex items-center gap-3 px-3 py-2.5 bg-white/[0.03] rounded-xl">
-                                <div className="h-7 w-7 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-[10px] font-bold text-white">AR</div>
+                                <div className="h-7 w-7 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-[10px] font-bold text-white">Yo</div>
                                 <div className="flex-1">
-                                    <p className="text-xs font-medium text-white">Alex Rivera</p>
+                                    <p className="text-xs font-medium text-white">You</p>
                                     <p className="text-[10px] text-white/30">You (owner — auto-assigned)</p>
                                 </div>
                                 <span className="text-[10px] text-violet-400 bg-violet-400/10 px-2 py-0.5 rounded-full font-medium">Owner</span>
@@ -742,6 +862,7 @@ const INITIAL_STATE: WizardState = {
     githubBranch: "main",
     uploadedFiles: [],
     parsingComplete: false,
+    projectId: null,
     components: [],
 };
 
@@ -758,15 +879,54 @@ export const NewProjectWizard = ({ onClose, onLaunch }: NewProjectWizardProps) =
         return true;
     };
 
+    const createProjectMut = useMutation({
+        mutationFn: async () => projectsApi.create(state.projectName, state.description, "from-violet-500 to-purple-600", "Activity"),
+        onSuccess: (data) => {
+            setState(s => ({ ...s, projectId: data.id }));
+            setStep(1);
+        }
+    });
+
+    const createComponentMut = useMutation({
+        mutationFn: async ({ comp }: { comp: ComponentDef }) => {
+            if (!state.projectId) return;
+            const c = await componentsApi.create(state.projectId, comp.name, comp.color);
+            await filesApi.assignToComponent(state.projectId, comp.fileIds, c.id);
+            // Re-map internal id to real ID under the hood
+            setState(s => ({
+                ...s,
+                components: s.components.map(x => x.id === comp.id ? { ...x, id: c.id } : x)
+            }));
+        }
+    });
+
+    const launchMut = useMutation({
+        mutationFn: async () => {
+            if (!state.projectId) return;
+            await projectsApi.confirm(state.projectId);
+            onLaunch(state.projectName);
+        }
+    });
+
     const handleNext = () => {
-        if (step < 4) setStep(s => s + 1);
+        if (step === 0 && !state.projectId) {
+            createProjectMut.mutate();
+        } else if (step === 2) {
+            // Create components and assign files on the real backend when leaving step 2
+            state.components.forEach(c => {
+                if (c.id.startsWith("comp-")) {
+                    createComponentMut.mutate({ comp: c });
+                }
+            });
+            setStep(3);
+        } else if (step < 4) {
+            setStep(s => s + 1);
+        }
     };
 
     const handleLaunch = () => {
         setIsLaunching(true);
-        setTimeout(() => {
-            onLaunch(state.projectName);
-        }, 1200);
+        launchMut.mutate();
     };
 
     const STEP_SUBTITLES = [

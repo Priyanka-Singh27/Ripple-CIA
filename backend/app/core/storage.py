@@ -1,3 +1,6 @@
+import asyncio
+from typing import Optional
+
 import boto3
 from botocore.exceptions import ClientError
 
@@ -6,7 +9,7 @@ from app.core.config import settings
 _s3_client = None
 
 
-def get_s3():
+def get_s3_client():
     global _s3_client
     if _s3_client is None:
         _s3_client = boto3.client(
@@ -20,7 +23,7 @@ def get_s3():
 
 
 def ensure_bucket_exists() -> None:
-    s3 = get_s3()
+    s3 = get_s3_client()
     try:
         s3.head_bucket(Bucket=settings.aws_s3_bucket)
     except ClientError as e:
@@ -44,40 +47,77 @@ def ensure_bucket_exists() -> None:
             raise
 
 
-def generate_presigned_upload_url(s3_key: str, expires_in: int = 3600) -> str:
-    s3 = get_s3()
-    return s3.generate_presigned_url(
-        "put_object",
-        Params={"Bucket": settings.aws_s3_bucket, "Key": s3_key},
-        ExpiresIn=expires_in,
+async def generate_presigned_put_url(key: str, content_type: str, expires: int = 900) -> str:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": settings.aws_s3_bucket, "Key": key, "ContentType": content_type},
+            ExpiresIn=expires,
+        )
     )
 
 
-def generate_presigned_download_url(s3_key: str, expires_in: int = 3600) -> str:
-    s3 = get_s3()
-    return s3.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": settings.aws_s3_bucket, "Key": s3_key},
-        ExpiresIn=expires_in,
+async def generate_presigned_get_url(key: str, expires: int = 900) -> str:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.aws_s3_bucket, "Key": key},
+            ExpiresIn=expires,
+        )
     )
 
+async def generate_presigned_upload_url(s3_key: str, expires_in: int = 3600) -> str:
+    """Legacy alias"""
+    return await generate_presigned_put_url(s3_key, "application/octet-stream", expires_in)
 
-def upload_bytes(s3_key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
-    s3 = get_s3()
-    s3.put_object(
-        Bucket=settings.aws_s3_bucket,
-        Key=s3_key,
-        Body=data,
-        ContentType=content_type,
-    )
+async def generate_presigned_download_url(s3_key: str, expires_in: int = 3600) -> str:
+     """Legacy alias"""
+     return await generate_presigned_get_url(s3_key, expires_in)
 
 
-def download_bytes(s3_key: str) -> bytes:
-    s3 = get_s3()
-    response = s3.get_object(Bucket=settings.aws_s3_bucket, Key=s3_key)
-    return response["Body"].read()
+async def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    def _upload():
+        s3.put_object(
+            Bucket=settings.aws_s3_bucket,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
+    await loop.run_in_executor(None, _upload)
 
 
-def delete_object(s3_key: str) -> None:
-    s3 = get_s3()
-    s3.delete_object(Bucket=settings.aws_s3_bucket, Key=s3_key)
+async def download_bytes(key: str) -> bytes:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    def _download():
+        response = s3.get_object(Bucket=settings.aws_s3_bucket, Key=key)
+        return response["Body"].read()
+    return await loop.run_in_executor(None, _download)
+
+
+async def delete_object(key: str) -> None:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: s3.delete_object(Bucket=settings.aws_s3_bucket, Key=key))
+
+
+async def object_exists(key: str) -> bool:
+    s3 = get_s3_client()
+    loop = asyncio.get_event_loop()
+    def _exists():
+        try:
+            s3.head_object(Bucket=settings.aws_s3_bucket, Key=key)
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                return False
+            raise
+    return await loop.run_in_executor(None, _exists)

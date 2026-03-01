@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { projectsApi, notificationsApi, ApiNotification, Invite } from '@/src/lib/api';
 import { NewProjectWizard } from "@/src/components/NewProjectWizard";
 import {
   LayoutDashboard,
@@ -37,118 +39,25 @@ interface Project {
   id: string;
   name: string;
   description: string;
-  owner: { name: string; initials: string; color: string };
-  role: "Owner" | "Contributor";
-  componentCount: number;
-  contributorCount: number;
-  lastActivity: string;
-  activeChanges: number;
-  status: ComponentStatus;
+  owner?: { name: string; initials: string; color: string };
+  role?: string;
+  componentCount?: number;
+  contributorCount?: number;
+  lastActivity?: string;
+  activeChanges?: number;
+  status: string;
   isDraft?: boolean;
+  created_at: string;
 }
 
-interface PendingInvite {
-  id: string;
-  projectName: string;
-  owner: { name: string; initials: string; color: string };
-  component: string;
-  role: "contributor" | "read_only";
-}
-
-interface Notification {
-  id: string;
-  message: string;
-  time: string;
-  read: boolean;
-  type: "change" | "invite" | "approved";
+interface PendingInvite extends Invite {
+  project_name?: string;
+  component_name?: string;
+  invited_by?: string;
+  role: string;
 }
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const MOCK_PROJECTS: Project[] = [
-  {
-    id: "1",
-    name: "E-Commerce Platform",
-    description: "Full-stack marketplace with microservices architecture",
-    owner: { name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-    role: "Owner",
-    componentCount: 8,
-    contributorCount: 5,
-    lastActivity: "2 hours ago",
-    activeChanges: 2,
-    status: "flagged",
-  },
-  {
-    id: "2",
-    name: "Auth Service",
-    description: "Centralised authentication and authorisation system",
-    owner: { name: "Priya Sharma", initials: "PS", color: "from-emerald-500 to-green-600" },
-    role: "Contributor",
-    componentCount: 4,
-    contributorCount: 3,
-    lastActivity: "5 hours ago",
-    activeChanges: 1,
-    status: "pending",
-  },
-  {
-    id: "3",
-    name: "Analytics Dashboard",
-    description: "Real-time data visualisation and reporting pipeline",
-    owner: { name: "Raj Patel", initials: "RP", color: "from-amber-500 to-orange-600" },
-    role: "Contributor",
-    componentCount: 6,
-    contributorCount: 4,
-    lastActivity: "Yesterday",
-    activeChanges: 0,
-    status: "stable",
-  },
-  {
-    id: "4",
-    name: "Mobile API Gateway",
-    description: "REST gateway layer for iOS and Android clients",
-    owner: { name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-    role: "Owner",
-    componentCount: 5,
-    contributorCount: 2,
-    lastActivity: "3 days ago",
-    activeChanges: 0,
-    status: "stable",
-  },
-];
-
-const MOCK_INVITES: PendingInvite[] = [
-  {
-    id: "inv1",
-    projectName: "Billing Microservice",
-    owner: { name: "Sarah Chen", initials: "SC", color: "from-rose-500 to-pink-600" },
-    component: "Payment Processor",
-    role: "contributor",
-  },
-];
-
-const MOCK_NOTIFICATIONS: Notification[] = [
-  {
-    id: "n1",
-    message: "Heads up — a change in Auth might affect your Dashboard code.",
-    time: "10 min ago",
-    read: false,
-    type: "change",
-  },
-  {
-    id: "n2",
-    message: "validateUser signature update — impact mapped across 3 components.",
-    time: "1 hour ago",
-    read: false,
-    type: "change",
-  },
-  {
-    id: "n3",
-    message: "Shipped cleanly ✓ — Mobile API Gateway change confirmed by all.",
-    time: "3 hours ago",
-    read: true,
-    type: "approved",
-  },
-];
 
 // ─── Status Helpers ───────────────────────────────────────────────────────────
 
@@ -170,8 +79,8 @@ const Avatar = ({ initials, color, size = "sm" }: { initials: string; color: str
   );
 };
 
-const StatusBadge = ({ status }: { status: ComponentStatus }) => {
-  const cfg = STATUS_CONFIG[status];
+const StatusBadge = ({ status }: { status: string }) => {
+  const cfg = STATUS_CONFIG[status as ComponentStatus] || STATUS_CONFIG.stable;
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-0.5 rounded-full border", cfg.className)}>
       <span className={cn("h-1.5 w-1.5 rounded-full", cfg.dotClass)} />
@@ -246,16 +155,16 @@ const ProjectCard = ({ project, onClick }: { project: Project; onClick: () => vo
       {/* Footer */}
       <div className="flex items-center justify-between pt-4 border-t border-white/[0.06]">
         <div className="flex items-center gap-2">
-          <Avatar initials={project.owner.initials} color={project.owner.color} size="sm" />
+          {project.owner && <Avatar initials={project.owner.initials} color={project.owner.color} size="sm" />}
           <span className="text-white/40 text-[11px]">
             <span className={cn("font-medium", project.role === "Owner" ? "text-violet-400" : "text-white/60")}>
-              {project.role}
+              {project.role || "Contributor"}
             </span>
           </span>
         </div>
         <span className="text-white/25 text-[11px] flex items-center gap-1">
           <Clock className="h-3 w-3" />
-          {project.lastActivity}
+          {project.lastActivity || new Date(project.created_at).toLocaleDateString()}
         </span>
       </div>
     </div>
@@ -306,9 +215,9 @@ const InviteModal = ({
         </span>
       )}
       <div className="flex items-center gap-3 mb-5">
-        <Avatar initials={invite.owner.initials} color={invite.owner.color} size="md" />
+        <Avatar initials={(invite.invited_by || "X").slice(0, 2).toUpperCase()} color="from-rose-500 to-pink-600" size="md" />
         <div>
-          <p className="text-white text-sm font-semibold">{invite.owner.name}</p>
+          <p className="text-white text-sm font-semibold">{invite.invited_by}</p>
           <p className="text-white/40 text-xs">invited you to collaborate</p>
         </div>
       </div>
@@ -316,11 +225,11 @@ const InviteModal = ({
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-4 mb-5 space-y-2.5">
         <div className="flex justify-between text-xs">
           <span className="text-white/40">Project</span>
-          <span className="text-white font-medium">{invite.projectName}</span>
+          <span className="text-white font-medium">{invite.project_name || "Unknown"}</span>
         </div>
         <div className="flex justify-between text-xs">
           <span className="text-white/40">Component</span>
-          <span className="text-white font-medium">{invite.component}</span>
+          <span className="text-white font-medium">{invite.component_name || "All Components"}</span>
         </div>
         <div className="flex justify-between text-xs">
           <span className="text-white/40">Role</span>
@@ -346,34 +255,43 @@ const InviteModal = ({
   </div>
 );
 
-const NotificationPanel = ({ notifications, onClose }: { notifications: Notification[]; onClose: () => void }) => (
-  <div className="absolute right-0 top-12 z-50 w-80 bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-    <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
-      <span className="text-sm font-semibold text-white">Notifications</span>
-      <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
-        <X className="h-4 w-4" />
-      </button>
-    </div>
-    <div className="max-h-72 overflow-y-auto">
-      {notifications.map((n) => (
-        <div key={n.id} className={cn("px-4 py-3 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.03] transition-colors", !n.read && "bg-white/[0.02]")}>
-          <div className="flex gap-3">
-            <span className={cn("mt-0.5 h-2 w-2 rounded-full shrink-0", !n.read ? "bg-violet-500" : "bg-transparent border border-white/20")} />
-            <div>
-              <p className="text-xs text-white/70 leading-relaxed">{n.message}</p>
-              <p className="text-[10px] text-white/25 mt-1">{n.time}</p>
+const NotificationPanel = ({ notifications, onClose }: { notifications: ApiNotification[]; onClose: () => void }) => {
+  const queryClient = useQueryClient();
+  const markRead = useMutation({
+    mutationFn: (id: string) => notificationsApi.markRead([id]),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications'] })
+  });
+
+  return (
+    <div className="absolute right-0 top-12 z-50 w-80 bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
+        <span className="text-sm font-semibold text-white">Notifications</span>
+        <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        {notifications.length === 0 && <div className="p-4 text-xs text-center text-white/40">No notifications</div>}
+        {notifications.map((n) => (
+          <div key={n.id} onClick={() => !n.read && markRead.mutate(n.id)} className={cn("px-4 py-3 border-b border-white/[0.04] last:border-0 hover:bg-white/[0.03] transition-colors cursor-pointer", !n.read && "bg-white/[0.02]")}>
+            <div className="flex gap-3">
+              <span className={cn("mt-0.5 h-2 w-2 rounded-full shrink-0", !n.read ? "bg-violet-500" : "bg-transparent border border-white/20")} />
+              <div>
+                <p className="text-xs text-white/70 leading-relaxed">{n.message || (n as any).title}</p>
+                <p className="text-[10px] text-white/25 mt-1">{new Date(n.created_at).toLocaleString()}</p>
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
+      <div className="px-4 py-3 border-t border-white/[0.06]">
+        <button className="text-xs text-white/40 hover:text-white transition-colors flex items-center gap-1 mx-auto">
+          View all <ChevronRight className="h-3 w-3" />
+        </button>
+      </div>
     </div>
-    <div className="px-4 py-3 border-t border-white/[0.06]">
-      <button className="text-xs text-white/40 hover:text-white transition-colors flex items-center gap-1 mx-auto">
-        View all <ChevronRight className="h-3 w-3" />
-      </button>
-    </div>
-  </div>
-);
+  );
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -388,38 +306,56 @@ export const HomePage = ({
   onOpenProfile?: () => void;
   onOpenView?: (viewType: 'global-changes' | 'global-teams' | 'global-notifications' | 'global-settings') => void;
 }) => {
-  const [isLoading] = useState(false);
-  const [projects, setProjects] = useState<Project[]>(MOCK_PROJECTS);
-  const [invites, setInvites] = useState<PendingInvite[]>(MOCK_INVITES);
+  const queryClient = useQueryClient();
+  const { data: projects = [], isLoading } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => projectsApi.list(),
+  });
+
+  const { data: invites = [] } = useQuery({
+    queryKey: ['invites'],
+    queryFn: async () => {
+      // Assume an endpoint exists in backend like GET /invites/pending
+      // since we didn't export it in api.ts wrapper, we use axios instance
+      const { instance } = await import('@/src/lib/api');
+      const res = await instance.get('/invites/pending');
+      return res.data.data;
+    },
+  });
+
+  const { data: notificationsData } = useQuery({
+    queryKey: ['notifications'],
+    queryFn: () => notificationsApi.list(),
+  });
+  const notifications = Array.isArray(notificationsData) ? notificationsData : [];
+
   const [showNotifications, setShowNotifications] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showUploadModal, setShowUploadModal] = useState(false);
 
-  const handleProjectLaunch = (projectName: string) => {
-    const newProject: Project = {
-      id: `proj-${Date.now()}`,
-      name: projectName,
-      description: "Newly created project — dependency graph is being mapped.",
-      owner: { name: "Alex Rivera", initials: "AR", color: "from-violet-500 to-purple-600" },
-      role: "Owner",
-      componentCount: 0,
-      contributorCount: 1,
-      lastActivity: "Just now",
-      activeChanges: 0,
-      status: "stable",
-    };
-    setProjects(prev => [newProject, ...prev]);
+  const handleProjectLaunch = (projectId: string) => {
     setShowUploadModal(false);
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
   };
 
-  const unreadCount = MOCK_NOTIFICATIONS.filter((n) => !n.read).length;
-  const filteredProjects = projects.filter((p) =>
+  const unreadCount = notifications.filter((n: ApiNotification) => !(n as any).is_read && !n.read).length;
+  const filteredProjects = projects.filter((p: Project) =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     p.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleAcceptInvite = () => setInvites((prev) => prev.slice(1));
-  const handleDeclineInvite = () => setInvites((prev) => prev.slice(1));
+  const acceptMut = useMutation({
+    mutationFn: (id: string) => notificationsApi.acceptInvite(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invites'] })
+  });
+
+  const declineMut = useMutation({
+    mutationFn: (id: string) => notificationsApi.declineInvite(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['invites'] })
+  });
+
+  const handleAcceptInvite = () => invites.length > 0 && acceptMut.mutate(invites[0].id);
+  const handleDeclineInvite = () => invites.length > 0 && declineMut.mutate(invites[0].id);
 
   const handleNavClick = (label: string) => {
     if (label === 'Changes') onOpenView?.('global-changes');
@@ -527,7 +463,7 @@ export const HomePage = ({
               </button>
               {showNotifications && (
                 <NotificationPanel
-                  notifications={MOCK_NOTIFICATIONS}
+                  notifications={notifications}
                   onClose={() => setShowNotifications(false)}
                 />
               )}

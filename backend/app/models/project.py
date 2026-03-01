@@ -18,6 +18,8 @@ class Project(Base):
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    color: Mapped[str] = mapped_column(String(100), default="from-violet-500 to-purple-600")
+    icon: Mapped[str] = mapped_column(String(50), default="box")
     strictness_mode: Mapped[str] = mapped_column(
         Enum("visibility", "soft", "full", name="strictness_mode_enum"),
         default="visibility",

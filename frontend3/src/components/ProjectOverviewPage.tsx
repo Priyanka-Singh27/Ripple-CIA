@@ -9,51 +9,8 @@ import {
 import { cn } from "@/src/lib/utils";
 import { Particles } from "@/src/components/ui/particles";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type ComponentStatus = "stable" | "flagged" | "pending" | "locked";
-type StrictnessMode = "visibility" | "soft" | "full";
-
-interface Contributor {
-    id: string;
-    name: string;
-    initials: string;
-    color: string;
-}
-
-interface ComponentItem {
-    id: string;
-    name: string;
-    status: ComponentStatus;
-    fileCount: number;
-    contributors: Contributor[];
-    lastActivity: string;
-    activeChanges: number;
-    isMyComponent: boolean;
-}
-
-interface ActiveChange {
-    id: string;
-    title: string;
-    author: { name: string; initials: string; color: string };
-    sourceComponent: string;
-    affectedComponents: string[];
-    acknowledgedCount: number;
-    totalCount: number;
-    submittedAgo: string;
-}
-
-interface ProjectData {
-    id: string;
-    name: string;
-    description: string;
-    owner: { id: string; name: string; initials: string; color: string };
-    isOwner: boolean;
-    strictnessMode: StrictnessMode;
-    createdAt: string;
-    components: ComponentItem[];
-    activeChanges: ActiveChange[];
-}
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { projectsApi, notificationsApi, ProjectData, ComponentItem, StrictnessMode, ComponentStatus, ActiveChange, Collaborator } from "@/src/lib/api";
 
 // ─── Mock Data ────────────────────────────────────────────────────────────────
 

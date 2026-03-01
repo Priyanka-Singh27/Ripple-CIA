@@ -20,6 +20,13 @@ async def publish(channel: str, message: str) -> None:
     await r.publish(channel, message)
 
 
+async def subscribe(channel: str):
+    r = await get_redis()
+    pubsub = r.pubsub()
+    await pubsub.subscribe(channel)
+    return pubsub
+
+
 async def close_redis() -> None:
     global _redis_pool
     if _redis_pool:

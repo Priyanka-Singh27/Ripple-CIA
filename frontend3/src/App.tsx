@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import DemoOne, { HeroScrollDemo, GlowingEffectDemo, AgentEraSection, Footer } from './demo';
+import { useRippleSocket } from './hooks/useRippleSocket';
+import { authStore } from './lib/authStore';
 import { AuthPage } from './components/AuthPage';
 import { HomePage } from './components/HomePage';
 import { ProjectOverviewPage } from './components/ProjectOverviewPage';
@@ -20,6 +22,7 @@ import { Particles } from './components/ui/particles';
 type ActiveView =
   | { type: 'landing' }
   | { type: 'auth' }
+  | { type: 'auth-callback' }
   | { type: 'dashboard' }
   | { type: 'project'; projectId: string }
   | { type: 'ide'; projectId: string; componentId: string; componentName: string; readOnly: boolean }
@@ -35,7 +38,52 @@ type ActiveView =
   | { type: 'global-settings' };
 
 export default function App() {
-  const [view, setView] = useState<ActiveView>({ type: 'landing' });
+  const [view, setView] = useState<ActiveView>(() => {
+    // Initial view resolution based on isAuthenticated and pathname
+    const isCallback = window.location.pathname === '/auth/callback';
+    if (isCallback) return { type: 'auth-callback' };
+
+    // Fallback logic, but since main.tsx waits for refresh() we can check authStore
+    const isAuth = authStore.getState().isInitialized && authStore.getState().accessToken;
+    return isAuth ? { type: 'dashboard' } : { type: 'landing' };
+  });
+
+  useEffect(() => {
+    // Automatically redirect to auth-callback if pathname matches, just in case
+    if (window.location.pathname === '/auth/callback' && view.type !== 'auth-callback') {
+      setView({ type: 'auth-callback' });
+    }
+  }, [view.type]);
+
+  useEffect(() => {
+    if (view.type === 'auth-callback') {
+      authStore.getState().refresh()
+        .then(() => {
+          window.history.replaceState({}, document.title, "/");
+          setView({ type: 'dashboard' });
+        })
+        .catch(() => {
+          window.history.replaceState({}, document.title, "/");
+          setView({ type: 'landing' });
+        });
+    }
+  }, [view.type]);
+
+  const isAuthedObj = authStore.getState().isInitialized && !!authStore.getState().accessToken;
+  const shouldMountSocket = isAuthedObj && view.type !== 'auth' && view.type !== 'landing' && view.type !== 'auth-callback';
+
+  const SocketProvider = ({ children }: { children: React.ReactNode }) => {
+    useRippleSocket();
+    return <>{children}</>;
+  };
+
+  if (view.type === 'auth-callback') {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        Processing login...
+      </div>
+    );
+  }
 
   // Landing page — no wrapper, keep original font scale
   if (view.type === 'landing') {
@@ -63,7 +111,6 @@ export default function App() {
     return (
       <AuthPage
         onBack={() => setView({ type: 'landing' })}
-        onSignInSuccess={() => setView({ type: 'dashboard' })}
       />
     );
   }
@@ -183,7 +230,6 @@ export default function App() {
     );
   };
 
-  return <div className="ripple-app">{renderView()}</div>;
+  const content = <div className="ripple-app">{renderView()}</div>;
+  return shouldMountSocket ? <SocketProvider>{content}</SocketProvider> : content;
 }
-
-
